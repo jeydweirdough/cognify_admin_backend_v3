@@ -1,880 +1,695 @@
--- ================================================================
--- SEED DATA
--- Run this AFTER schema.sql
--- Order: roles → users → system_settings → subjects → modules
---        → assessments → questions → assessment_questions
--- ================================================================
-
-
--- ================================================================
--- ROLES
--- Permissions model: { "pages": { "<page>": ["create","retrieve","update","delete"] } }
--- ================================================================
-
-INSERT INTO roles (id, name, permissions, is_system) VALUES
-
--- ADMIN: full access to everything
-(
-  'aa000000-0000-0000-0000-000000000001',
-  'ADMIN',
-  '{
-    "pages": {
-      "dashboard":    ["create","retrieve","update","delete"],
-      "subjects":     ["create","retrieve","update","delete"],
-      "modules":      ["create","retrieve","update","delete"],
-      "assessments":  ["create","retrieve","update","delete"],
-      "questions":    ["create","retrieve","update","delete"],
-      "users":        ["create","retrieve","update","delete"],
-      "revisions":    ["create","retrieve","update","delete"],
-      "verification": ["create","retrieve","update","delete"],
-      "settings":     ["create","retrieve","update","delete"],
-      "results":      ["retrieve"]
-    }
-  }',
-  TRUE
-),
-
--- FACULTY: can create and manage content, submit for review, cannot manage users or settings
-(
-  'aa000000-0000-0000-0000-000000000002',
-  'FACULTY',
-  '{
-    "pages": {
-      "dashboard":    ["retrieve"],
-      "subjects":     ["create","retrieve","update"],
-      "modules":      ["create","retrieve","update"],
-      "assessments":  ["create","retrieve","update"],
-      "questions":    ["create","retrieve","update"],
-      "revisions":    ["create","retrieve"],
-      "results":      ["retrieve"]
-    }
-  }',
-  TRUE
-),
-
--- STUDENT: read-only access to learning content, can take assessments and view own results
-(
-  'aa000000-0000-0000-0000-000000000003',
-  'STUDENT',
-  '{
-    "pages": {
-      "dashboard":   ["retrieve"],
-      "subjects":    ["retrieve"],
-      "modules":     ["retrieve"],
-      "assessments": ["retrieve","create"],
-      "results":     ["retrieve"]
-    }
-  }',
-  TRUE
-);
-
-
--- ================================================================
--- USERS
--- 3 admins, 5 faculty, 12 students — all BSPsych
--- Varied status: ACTIVE / DEACTIVATED / PENDING
--- ================================================================
-
-INSERT INTO users (id, first_name, middle_name, last_name, email, password, department, role_id, status, date_created, last_updated, last_login) VALUES
-
--- ADMINS
-(
-  '00000000-0000-0000-0001-000000000001', 'Maria', 'Santos',  'Reyes',
-  'maria.reyes@cvsu-bacoor.edu.ph',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000001', 'ACTIVE',
-  '2024-06-01 08:00:00', '2026-02-20 09:15:00', '2026-02-23 08:00:00'
-),
-(
-  '00000000-0000-0000-0001-000000000002', 'Jose',  'Cruz',    'Dela Cruz',
-  'jose.delacruz@cvsu-bacoor.edu.ph', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000001', 'ACTIVE',
-  '2024-06-01 08:00:00', '2026-01-15 10:00:00', '2026-02-22 14:30:00'
-),
-(
-  '00000000-0000-0000-0001-000000000003', 'Ana',   'Bautista', 'Garcia',
-  'ana.garcia@cvsu-bacoor.edu.ph',    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000001', 'ACTIVE',
-  '2024-06-01 08:00:00', '2025-11-10 11:00:00', '2026-02-21 16:00:00'
-),
-
--- FACULTY
-(
-  '00000000-0000-0000-0002-000000000001', 'Carlos',   'Mendoza',  'Villanueva',
-  'carlos.villanueva@cvsu-bacoor.edu.ph', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000002', 'ACTIVE',
-  '2024-07-15 09:00:00', '2026-02-18 08:30:00', '2026-02-23 07:45:00'
-),
-(
-  '00000000-0000-0000-0002-000000000002', 'Liza',     'Torres',   'Navarro',
-  'liza.navarro@cvsu-bacoor.edu.ph',     '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000002', 'ACTIVE',
-  '2024-07-15 09:00:00', '2026-02-10 13:00:00', '2026-02-20 09:00:00'
-),
-(
-  '00000000-0000-0000-0002-000000000003', 'Ramon',    'Aquino',   'Soriano',
-  'ramon.soriano@cvsu-bacoor.edu.ph',    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000002', 'ACTIVE',
-  '2024-08-01 09:00:00', '2025-12-05 10:15:00', '2026-02-19 11:30:00'
-),
-(
-  '00000000-0000-0000-0002-000000000004', 'Elena',    'Ramos',    'Castillo',
-  'elena.castillo@cvsu-bacoor.edu.ph',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000002', 'ACTIVE',
-  '2024-08-01 09:00:00', '2026-01-28 15:00:00', '2026-02-17 14:00:00'
-),
-(
-  '00000000-0000-0000-0002-000000000005', 'Miguel',   'Flores',   'Ibarra',
-  'miguel.ibarra@cvsu-bacoor.edu.ph',    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000002', 'DEACTIVATED',
-  '2024-08-01 09:00:00', '2025-09-01 08:00:00', '2025-08-30 10:00:00'
-),
-
--- STUDENTS
-(
-  '00000000-0000-0000-0003-000000000001', 'Sofia',    'Reyes',    'Aguilar',
-  'sofia.aguilar@student.cvsu-bacoor.edu.ph',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-10 10:00:00', '2026-02-22 08:00:00', '2026-02-23 07:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000002', 'Marco',    'Lim',      'Santos',
-  'marco.santos@student.cvsu-bacoor.edu.ph',    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-10 10:00:00', '2026-02-21 09:30:00', '2026-02-22 18:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000003', 'Bianca',   'Cruz',     'Mendoza',
-  'bianca.mendoza@student.cvsu-bacoor.edu.ph',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-10 10:00:00', '2026-02-20 11:00:00', '2026-02-23 06:45:00'
-),
-(
-  '00000000-0000-0000-0003-000000000004', 'Paolo',    'Garcia',   'Fernandez',
-  'paolo.fernandez@student.cvsu-bacoor.edu.ph', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-11 10:00:00', '2026-02-19 14:00:00', '2026-02-22 20:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000005', 'Katrina',  'Diaz',     'Ramos',
-  'katrina.ramos@student.cvsu-bacoor.edu.ph',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-11 10:00:00', '2026-02-18 16:00:00', '2026-02-21 08:30:00'
-),
-(
-  '00000000-0000-0000-0003-000000000006', 'Luis',     'Tan',      'Aquino',
-  'luis.aquino@student.cvsu-bacoor.edu.ph',     '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-12 10:00:00', '2026-02-17 10:00:00', '2026-02-22 12:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000007', 'Angela',   'Bautista', 'Torres',
-  'angela.torres@student.cvsu-bacoor.edu.ph',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-12 10:00:00', '2026-02-16 09:00:00', '2026-02-20 19:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000008', 'Rafael',   'Navarro',  'Villanueva',
-  'rafael.villanueva@student.cvsu-bacoor.edu.ph','$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-13 10:00:00', '2026-02-15 11:00:00', '2026-02-21 15:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000009', 'Camille',  'Soriano',  'De Leon',
-  'camille.deleon@student.cvsu-bacoor.edu.ph',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'PENDING',
-  '2026-02-20 14:00:00', '2026-02-20 14:00:00', '2026-02-20 14:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000010', 'Nico',     'Castillo', 'Flores',
-  'nico.flores@student.cvsu-bacoor.edu.ph',     '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'PENDING',
-  '2026-02-21 09:00:00', '2026-02-21 09:00:00', '2026-02-21 09:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000011', 'Tricia',   'Ibarra',   'Pascual',
-  'tricia.pascual@student.cvsu-bacoor.edu.ph',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'DEACTIVATED',
-  '2025-06-10 10:00:00', '2025-10-01 08:00:00', '2025-09-28 10:00:00'
-),
-(
-  '00000000-0000-0000-0003-000000000012', 'Gab',      'Pascual',  'Medina',
-  'gab.medina@student.cvsu-bacoor.edu.ph',      '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewh5TY4uMmyeGmPu', 'BSPsych',
-  'aa000000-0000-0000-0000-000000000003', 'ACTIVE',
-  '2025-06-14 10:00:00', '2026-02-22 10:00:00', '2026-02-23 06:00:00'
-);
-
-
--- ================================================================
--- SYSTEM SETTINGS
--- ================================================================
-
-INSERT INTO system_settings (id, academic_year, institutional_name, maintenance_mode) VALUES
-(
-  'dd000000-0000-0000-0000-000000000001',
-  '2025-2026',
-  'BS Psychology CvSU - Bacoor Admin',
-  FALSE
-);
-
-
--- ================================================================
--- SUBJECTS
--- author = first admin user
--- weight stored in description metadata note: weight is not in
--- the schema column-wise so we add it as a column suggestion below,
--- OR store in a future metadata JSONB. For now added as a schema
--- ALTER so the seed can populate it properly.
--- ================================================================
-
-INSERT INTO subjects (id, name, description, color, weight, passing_rate, status, author_id, date_created, last_updated) VALUES
-
-(
-  'bb000000-0000-0000-0000-000000000001',
-  'Developmental Psychology',
-  'Scientific study of human development across the lifespan, covering biological, cognitive, social, and emotional domains.',
-  '#1e40af', 20, 60, 'APPROVED',
-  '00000000-0000-0000-0001-000000000001',
-  '2026-02-23 08:00:00', '2026-02-23 08:00:00'
-),
-(
-  'bb000000-0000-0000-0000-000000000002',
-  'Abnormal Psychology',
-  'Examination of psychopathology, diagnostic frameworks, etiology, and evidence-based treatment approaches.',
-  '#b91c1c', 20, 60, 'APPROVED',
-  '00000000-0000-0000-0001-000000000001',
-  '2026-02-23 08:00:00', '2026-02-23 08:00:00'
-),
-(
-  'bb000000-0000-0000-0000-000000000003',
-  'Industrial / Organizational Psychology',
-  'Application of psychological principles to workplace behavior, talent systems, and organizational effectiveness.',
-  '#047857', 20, 60, 'APPROVED',
-  '00000000-0000-0000-0001-000000000001',
-  '2026-02-23 08:00:00', '2026-02-23 08:00:00'
-),
-(
-  'bb000000-0000-0000-0000-000000000004',
-  'Psychological Assessment',
-  'Psychometric principles, test administration, interpretation, and integrated psychological reporting.',
-  '#7c3aed', 40, 60, 'APPROVED',
-  '00000000-0000-0000-0001-000000000001',
-  '2026-02-23 08:00:00', '2026-02-23 08:00:00'
-);
-
-
--- ================================================================
--- MODULES
--- Based on the topics in the JSON data.
--- author = first faculty member
--- ================================================================
-
-INSERT INTO modules (id, subject_id, author_id, title, file_name, file_url, format, status, date_created, last_updated) VALUES
-
--- Developmental Psychology (9 modules)
-('cc000001-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Prenatal',                  'DevPsy_1_Prenatal-Copy-2.pdf',              '/Lectures - Handouts/Developmental Psychology/DevPsy_1_Prenatal-Copy-2.pdf',              'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Infancy',                   'DevPsy_2_Infancy-Copy-2.pdf',               '/Lectures - Handouts/Developmental Psychology/DevPsy_2_Infancy-Copy-2.pdf',               'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Early Childhood',           'DevPsy_3_EarlyChildhood-Copy-Copy.pdf',     '/Lectures - Handouts/Developmental Psychology/DevPsy_3_EarlyChildhood-Copy-Copy.pdf',     'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000004', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Middle and Late Childhood', 'DevPsy_4_MiddleAndLateChildhood-Copy.pdf',  '/Lectures - Handouts/Developmental Psychology/DevPsy_4_MiddleAndLateChildhood-Copy.pdf',  'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000005', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Adolescence',               'DevPsy_5_Adolescence.pdf',                  '/Lectures - Handouts/Developmental Psychology/DevPsy_5_Adolescence.pdf',                  'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000006', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Young Adulthood',           'DevPsy_6_YoungAdulthood.pdf',               '/Lectures - Handouts/Developmental Psychology/DevPsy_6_YoungAdulthood.pdf',               'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000007', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Middle Adulthood',          'DevPsy_7_MiddleAdulthood.pdf',              '/Lectures - Handouts/Developmental Psychology/DevPsy_7_MiddleAdulthood.pdf',              'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000008', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Old Age',                   'DevPsy_8_OldAge.pdf',                       '/Lectures - Handouts/Developmental Psychology/DevPsy_8_OldAge.pdf',                       'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000001-0000-0000-0000-000000000009', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Death',                     'DevPsy_9_Death.pdf',                        '/Lectures - Handouts/Developmental Psychology/DevPsy_9_Death.pdf',                        'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- Abnormal Psychology (5 modules)
-('cc000002-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Phase 1', 'AbPsy_Phase1_.pdf',   '/Lectures - Handouts/Abnormal Psychology/AbPsy_Phase1_.pdf',   'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000002-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Phase 2', 'AbPsy_Phase2_.pdf',   '/Lectures - Handouts/Abnormal Psychology/AbPsy_Phase2_.pdf',   'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000002-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Phase 3', 'AbPsy_Phase3_.pdf',   '/Lectures - Handouts/Abnormal Psychology/AbPsy_Phase3_.pdf',   'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000002-0000-0000-0000-000000000004', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Phase 4', 'AbPsy_Phase4_-1.pdf', '/Lectures - Handouts/Abnormal Psychology/AbPsy_Phase4_-1.pdf', 'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000002-0000-0000-0000-000000000005', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Phase 5', 'AbPsy_Phase5_.pdf',   '/Lectures - Handouts/Abnormal Psychology/AbPsy_Phase5_.pdf',   'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- Industrial / Organizational Psychology (3 modules)
-('cc000003-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Introduction to Industrial Psychology', 'Introduction to Industrial Psychology.pdf', '/Lectures - Handouts/Industrial Organizational Psychology/Introduction to Industrial Psychology.pdf', 'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000003-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Legal Issues',                         'Legal Issues.pdf',                          '/Lectures - Handouts/Industrial Organizational Psychology/Legal Issues.pdf',                          'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000003-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Employee Selection',                   '4. Employee Selection.pdf',                 '/Lectures - Handouts/Industrial Organizational Psychology/4. Employee Selection.pdf',                 'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- Psychological Assessment (3 modules)
-('cc000004-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Psychological Assessment History (Version 1)', 'PsychAssess_1_PsychAssesHistory-Copy-2.pdf', '/Lectures - Handouts/Psychological Assessment/PsychAssess_1_PsychAssesHistory-Copy-2.pdf', 'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000004-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Psychological Assessment History (Version 2)', 'PsychAssess_1_PsychAssesHistory.pdf',        '/Lectures - Handouts/Psychological Assessment/PsychAssess_1_PsychAssesHistory.pdf',        'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('cc000004-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Psychological Assessment - Education',        'PsychAssess_7_Education.pdf',                '/Lectures - Handouts/Psychological Assessment/PsychAssess_7_Education.pdf',                'PDF', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00');
-
-
--- ================================================================
--- ASSESSMENTS
--- Per subject: 1 pre-assessment + 1 post-assessment
--- Per module:  1 quiz
--- All: 5 items, time_limit 15 min, status APPROVED
--- author = faculty assigned to that subject
--- ================================================================
-
-INSERT INTO assessments (id, subject_id, author_id, title, type, items, time_limit, schedule, status, date_created, last_updated) VALUES
-
--- ── Developmental Psychology ──────────────────────────────────
--- Pre / Post
-('ee000001-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Pre-Assessment',  'PRE_ASSESSMENT',  5, 15, '2026-03-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Developmental Psychology - Post-Assessment', 'POST_ASSESSMENT', 5, 15, '2026-06-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
--- Quizzes per module
-('ee000001-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Prenatal',                  'QUIZ', 5, 15, '2026-03-05 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000004', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Infancy',                   'QUIZ', 5, 15, '2026-03-10 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000005', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Early Childhood',           'QUIZ', 5, 15, '2026-03-15 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000006', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Middle and Late Childhood', 'QUIZ', 5, 15, '2026-03-20 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000007', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Adolescence',               'QUIZ', 5, 15, '2026-03-25 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000008', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Young Adulthood',           'QUIZ', 5, 15, '2026-04-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000009', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Middle Adulthood',          'QUIZ', 5, 15, '2026-04-05 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000010', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Old Age',                   'QUIZ', 5, 15, '2026-04-10 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000001-0000-0000-0000-000000000011', 'bb000000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Quiz - Death',                     'QUIZ', 5, 15, '2026-04-15 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Abnormal Psychology ───────────────────────────────────────
-('ee000002-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Pre-Assessment',  'PRE_ASSESSMENT',  5, 15, '2026-03-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000002-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Abnormal Psychology - Post-Assessment', 'POST_ASSESSMENT', 5, 15, '2026-06-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000002-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Quiz - Phase 1',                       'QUIZ',            5, 15, '2026-03-05 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000002-0000-0000-0000-000000000004', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Quiz - Phase 2',                       'QUIZ',            5, 15, '2026-03-10 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000002-0000-0000-0000-000000000005', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Quiz - Phase 3',                       'QUIZ',            5, 15, '2026-03-15 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000002-0000-0000-0000-000000000006', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Quiz - Phase 4',                       'QUIZ',            5, 15, '2026-03-20 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000002-0000-0000-0000-000000000007', 'bb000000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Quiz - Phase 5',                       'QUIZ',            5, 15, '2026-03-25 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Industrial / Organizational Psychology ───────────────────
-('ee000003-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'I/O Psychology - Pre-Assessment',        'PRE_ASSESSMENT',  5, 15, '2026-03-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000003-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'I/O Psychology - Post-Assessment',       'POST_ASSESSMENT', 5, 15, '2026-06-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000003-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Quiz - Introduction to Industrial Psychology', 'QUIZ',       5, 15, '2026-03-05 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000003-0000-0000-0000-000000000004', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Quiz - Legal Issues',                  'QUIZ',            5, 15, '2026-03-10 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000003-0000-0000-0000-000000000005', 'bb000000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Quiz - Employee Selection',            'QUIZ',            5, 15, '2026-03-15 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Psychological Assessment ─────────────────────────────────
-('ee000004-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Psychological Assessment - Pre-Assessment',  'PRE_ASSESSMENT',  5, 15, '2026-03-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000004-0000-0000-0000-000000000002', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Psychological Assessment - Post-Assessment', 'POST_ASSESSMENT', 5, 15, '2026-06-01 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000004-0000-0000-0000-000000000003', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Quiz - Assessment History (Version 1)', 'QUIZ',            5, 15, '2026-03-05 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000004-0000-0000-0000-000000000004', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Quiz - Assessment History (Version 2)', 'QUIZ',            5, 15, '2026-03-10 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ee000004-0000-0000-0000-000000000005', 'bb000000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Quiz - Education',                     'QUIZ',            5, 15, '2026-03-15 08:00:00', 'APPROVED', '2026-02-23 08:00:00', '2026-02-23 08:00:00');
-
-
--- ================================================================
--- QUESTIONS
--- 5 questions per assessment × 32 assessments = 160 questions
--- options: 4 choices (index 0–3), correct_answer = index of correct
--- Naming: q_<assessment_short>_<n>
--- ================================================================
-
-INSERT INTO questions (id, author_id, text, options, correct_answer, date_created, last_updated) VALUES
-
--- ── DevPsy Pre-Assessment (as010000-...-001) ──────────────────
-('ff010100-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Which period of development begins at conception and ends at birth?',
- '["Neonatal period","Prenatal period","Infancy","Early childhood"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010100-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'Piaget''s theory primarily focuses on which type of development?',
- '["Moral","Psychosocial","Cognitive","Physical"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010100-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Erikson''s first psychosocial stage is best described as:',
- '["Autonomy vs. Shame","Trust vs. Mistrust","Initiative vs. Guilt","Industry vs. Inferiority"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010100-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'The cephalocaudal principle states that development proceeds:',
- '["From head to toe","From core to extremities","From simple to complex","From abstract to concrete"]', 0, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010100-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Which theorist proposed the concept of the zone of proximal development?',
- '["Piaget","Freud","Vygotsky","Erikson"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── DevPsy Post-Assessment (as010000-...-002) ─────────────────
-('ff010200-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Late adulthood is associated with which of Erikson''s stages?',
- '["Generativity vs. Stagnation","Integrity vs. Despair","Identity vs. Role Confusion","Intimacy vs. Isolation"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010200-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'Kübler-Ross''s final stage of grief is:',
- '["Bargaining","Anger","Depression","Acceptance"]', 3, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010200-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Crystallized intelligence tends to ________ with age.',
- '["Decrease rapidly","Remain stable or increase","Disappear","Fluctuate unpredictably"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010200-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Which attachment style is associated with consistent caregiving?',
- '["Avoidant","Disorganized","Secure","Anxious-ambivalent"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010200-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Menopause typically occurs during which developmental stage?',
- '["Late adulthood","Early adulthood","Middle adulthood","Adolescence"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Prenatal (as010000-...-003) ────────────────────────
-('ff010300-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'The germinal stage lasts approximately how many weeks after fertilization?',
- '["2 weeks","4 weeks","8 weeks","12 weeks"]', 0, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010300-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'An agent that causes birth defects is called a:',
- '["Mutagen","Pathogen","Teratogen","Allergen"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010300-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'The embryonic stage spans from week 3 to week:',
- '["6","8","10","12"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010300-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Which layer gives rise to the nervous system?',
- '["Endoderm","Mesoderm","Ectoderm","Epiderm"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010300-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Fetal alcohol syndrome is caused by:',
- '["Smoking","Maternal stress","Alcohol consumption during pregnancy","Poor nutrition"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Infancy (as010000-...-004) ─────────────────────────
-('ff010400-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Object permanence is typically achieved by:',
- '["2 months","4 months","8 months","18 months"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010400-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'The rooting reflex helps the infant:',
- '["Grasp objects","Find the nipple for feeding","Respond to loud sounds","Maintain balance"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010400-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Stranger anxiety typically emerges at around:',
- '["2 months","6–8 months","12 months","18 months"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010400-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Harlow''s experiments with monkeys demonstrated the importance of:',
- '["Food provision","Contact comfort","Cognitive stimulation","Language exposure"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010400-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Ainsworth''s Strange Situation assessed:',
- '["Motor development","Cognitive schemas","Attachment patterns","Language acquisition"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Early Childhood (as010000-...-005) ─────────────────
-('ff010500-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Piaget''s preoperational stage spans ages:',
- '["0–2","2–7","7–11","11+"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010500-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'The inability to see things from another''s viewpoint is called:',
- '["Animism","Egocentrism","Centration","Irreversibility"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010500-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Kohlberg''s preconventional level of moral reasoning is driven by:',
- '["Social norms","Personal principles","Rewards and punishments","Empathy"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010500-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Gender constancy refers to understanding that:',
- '["Gender is determined by chromosomes","Gender does not change over time","Gender is a social construct","Gender changes with appearance"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010500-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Which parenting style combines high warmth with high control?',
- '["Authoritarian","Permissive","Uninvolved","Authoritative"]', 3, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Middle and Late Childhood (as010000-...-006) ───────
-('ff010600-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Conservation tasks are mastered during Piaget''s ________ stage.',
- '["Sensorimotor","Preoperational","Concrete operational","Formal operational"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010600-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'Industry vs. Inferiority is the psychosocial crisis of:',
- '["Early childhood","Middle childhood","Adolescence","Young adulthood"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010600-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'A child''s increasing ability to consider multiple dimensions is called:',
- '["Decentration","Egocentrism","Animism","Seriation"]', 0, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010600-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Metacognition refers to:',
- '["Learning by observation","Thinking about one''s own thinking","Emotional regulation","Moral reasoning"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010600-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Peer rejection in middle childhood is most associated with:',
- '["Academic achievement","Secure attachment","Aggressive or withdrawn behavior","High creativity"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Adolescence (as010000-...-007) ─────────────────────
-('ff010700-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Erikson''s stage for adolescence involves:',
- '["Trust vs. Mistrust","Identity vs. Role Confusion","Intimacy vs. Isolation","Industry vs. Inferiority"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010700-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'The imaginary audience phenomenon reflects:',
- '["Altruism","Heightened self-consciousness","Decreased egocentrism","Moral development"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010700-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Formal operational thinking allows adolescents to:',
- '["Think concretely","Use symbols","Reason abstractly and hypothetically","Perform conservation tasks"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010700-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'James Marcia''s identity achievement status involves:',
- '["No exploration or commitment","Commitment without exploration","Exploration without commitment","Exploration followed by commitment"]', 3, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010700-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'The primary sex characteristic in females is:',
- '["Breast development","Ovaries","Pubic hair","Widening hips"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Young Adulthood (as010000-...-008) ─────────────────
-('ff010800-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Erikson''s stage for young adulthood is:',
- '["Generativity vs. Stagnation","Identity vs. Role Confusion","Intimacy vs. Isolation","Integrity vs. Despair"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010800-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'Sternberg''s triangular theory of love includes all EXCEPT:',
- '["Passion","Commitment","Intimacy","Empathy"]', 3, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010800-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Fluid intelligence peaks during:',
- '["Childhood","Young adulthood","Middle adulthood","Late adulthood"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010800-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'The term "emerging adulthood" was coined by:',
- '["Erikson","Arnett","Levinson","Havighurst"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010800-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Levinson described early adulthood as the "novice phase" because:',
- '["People are inexperienced workers","Adults are forming initial life structures","Young adults lack identity","Adults peak cognitively"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Middle Adulthood (as010000-...-009) ────────────────
-('ff010900-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Generativity vs. Stagnation is Erikson''s stage for:',
- '["Late adulthood","Young adulthood","Middle adulthood","Adolescence"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010900-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'The "midlife crisis" concept was introduced by:',
- '["Erikson","Levinson","Vaillant","Jung"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010900-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Which type of intelligence increases during middle adulthood?',
- '["Fluid intelligence","Crystallized intelligence","Spatial intelligence","Processing speed"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010900-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'The "empty nest syndrome" refers to:',
- '["Cognitive decline","Retirement stress","Distress when children leave home","Loss of spouse"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff010900-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'Sandwich generation refers to adults who:',
- '["Care for both aging parents and own children","Experience identity confusion","Are between jobs","Transition to retirement"]', 0, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Old Age (as010000-...-010) ─────────────────────────
-('ff011000-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'Alzheimer''s disease primarily affects:',
- '["Motor function","Memory and cognitive function","Emotional regulation","Language production"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011000-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'Successful aging theory emphasizes:',
- '["Complete withdrawal from society","Low activity and disengagement","High activity and social engagement","Accepting physical decline"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011000-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Integrity vs. Despair is resolved through:',
- '["Future goal setting","Reflection on a meaningful life","Social withdrawal","Denial of death"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011000-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Which cognitive ability shows the least decline in late adulthood?',
- '["Processing speed","Working memory","Vocabulary and semantic memory","Divided attention"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011000-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'The disengagement theory suggests that aging involves:',
- '["Staying active","Mutual withdrawal from society","Selective engagement","Continuous development"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Death (as010000-...-011) ───────────────────────────
-('ff011100-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000001', 'The first stage of Kübler-Ross''s grief model is:',
- '["Anger","Denial","Bargaining","Depression"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011100-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000001', 'Palliative care focuses primarily on:',
- '["Curing terminal illness","Prolonging life at all costs","Comfort and quality of life","Surgical intervention"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011100-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000001', 'Bereavement refers to:',
- '["The process of dying","The state of having lost someone","Fear of death","Care for the dying"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011100-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000001', 'Terror management theory proposes that culture serves as:',
- '["A source of economic stability","A buffer against death anxiety","A guide for moral behavior","A means of social control"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff011100-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000001', 'A "good death" is commonly characterized by:',
- '["Sudden unexpected death","Pain management and dignity","Dying alone","Dying young"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Abnormal Pre-Assessment (as020000-...-001) ────────────────
-('ff020100-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'The DSM-5 is primarily used for:',
- '["Measuring intelligence","Diagnosing mental disorders","Assessing personality","Evaluating neurological function"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020100-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'The biopsychosocial model considers mental illness as a product of:',
- '["Only biological factors","Only psychological factors","Biological, psychological, and social factors","Social factors alone"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020100-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'The "4 Ds" used to define abnormal behavior include distress, deviance, dysfunction, and:',
- '["Delusion","Danger","Disorder","Depression"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020100-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'Comorbidity means a person:',
- '["Has a severe mental illness","Has two or more disorders simultaneously","Recovers from mental illness","Shows resistance to treatment"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020100-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'The medical model of abnormality views mental disorders as:',
- '["Learned behaviors","Social constructs","Diseases with biological bases","Moral failures"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Abnormal Post-Assessment (as020000-...-002) ───────────────
-('ff020200-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'CBT is most effective for treating:',
- '["Schizophrenia","Anxiety and mood disorders","Personality disorders","Substance dependence"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020200-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Positive symptoms of schizophrenia include:',
- '["Flat affect","Alogia","Hallucinations","Social withdrawal"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020200-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'Which disorder is characterized by persistent low mood for at least 2 years?',
- '["Major depressive disorder","Bipolar I","Dysthymia (Persistent Depressive Disorder)","Cyclothymia"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020200-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'The hallmark of OCD is:',
- '["Delusions","Obsessions and compulsions","Phobias","Dissociation"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020200-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'Borderline personality disorder is primarily characterized by:',
- '["Grandiosity","Instability in mood, identity, and relationships","Social detachment","Chronic lying"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Abnormal Phase 1 (as020000-...-003) ────────────────
-('ff020300-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'Which historical treatment involved drilling holes in the skull?',
- '["Lobotomy","Electroconvulsive therapy","Trephination","Hydrotherapy"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020300-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'The demonological model attributed mental illness to:',
- '["Brain lesions","Evil spirits","Social stress","Genetic defects"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020300-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'Philippe Pinel is known for:',
- '["Inventing the DSM","Advocating humane treatment of the mentally ill","Developing CBT","Discovering antipsychotic drugs"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020300-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'Which approach sees abnormal behavior as a result of learned responses?',
- '["Biological","Psychodynamic","Behavioral","Humanistic"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020300-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'The statistical definition of abnormality defines it as:',
- '["Behavior that causes harm","Behavior deviating far from the average","Behavior that violates social norms","Behavior that leads to distress"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Abnormal Phase 2 (as020000-...-004) ────────────────
-('ff020400-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'Major depressive disorder requires symptoms for at least:',
- '["1 week","2 weeks","1 month","6 months"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020400-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Bipolar I disorder is distinguished from Bipolar II by:',
- '["Hypomanic episodes","Full manic episodes","Depressive episodes only","Mixed episodes only"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020400-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'Anhedonia refers to:',
- '["Excessive fear","Inability to experience pleasure","Memory loss","Hallucinations"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020400-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'Learned helplessness is linked to the development of:',
- '["Schizophrenia","Anxiety disorders","Depression","Personality disorders"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020400-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'SSRIs are primarily used to treat:',
- '["Schizophrenia","Depression and anxiety","ADHD","Bipolar disorder"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Abnormal Phase 3 (as020000-...-005) ────────────────
-('ff020500-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'Generalized anxiety disorder is characterized by:',
- '["Specific phobias","Panic attacks","Excessive worry about multiple life areas","Obsessive thoughts"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020500-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'PTSD develops following:',
- '["A stressful job","Exposure to traumatic events","Social isolation","Childhood neglect only"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020500-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'The core feature of panic disorder is:',
- '["Chronic worry","Recurrent unexpected panic attacks","Social avoidance","Intrusive memories"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020500-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'Agoraphobia involves fear of:',
- '["Heights","Open or public spaces","Spiders","Social situations"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020500-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'EMDR is a treatment primarily used for:',
- '["Schizophrenia","PTSD","Bipolar disorder","Eating disorders"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Abnormal Phase 4 (as020000-...-006) ────────────────
-('ff020600-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'The hallmark symptom of schizophrenia is:',
- '["Mood swings","Psychosis","Compulsions","Dissociation"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020600-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Negative symptoms of schizophrenia include:',
- '["Hallucinations","Delusions","Flat affect and alogia","Disorganized speech"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020600-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'The dopamine hypothesis of schizophrenia suggests:',
- '["Excess serotonin","Excess dopamine activity","Low GABA","Low norepinephrine"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020600-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'Schizoaffective disorder combines features of schizophrenia and:',
- '["Personality disorder","Anxiety disorder","Mood disorder","Substance use disorder"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020600-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'First-generation antipsychotics primarily block:',
- '["Serotonin receptors","Dopamine D2 receptors","GABA receptors","Glutamate receptors"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Abnormal Phase 5 (as020000-...-007) ────────────────
-('ff020700-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000002', 'Anorexia nervosa is characterized by:',
- '["Binge eating","Severe food restriction and distorted body image","Normal weight with purging","Compulsive overeating"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020700-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000002', 'Antisocial personality disorder involves a pervasive pattern of:',
- '["Social anxiety","Disregard for others'' rights","Emotional dependency","Paranoid thinking"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020700-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000002', 'Substance use disorder is diagnosed based on:',
- '["Frequency of use alone","Amount used","Impaired control and negative consequences","Withdrawal symptoms only"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020700-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000002', 'Dialectical behavior therapy (DBT) was developed for:',
- '["Schizophrenia","Borderline personality disorder","ADHD","Autism spectrum disorder"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff020700-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000002', 'Which disorder involves alternating identities?',
- '["Depersonalization disorder","Dissociative amnesia","Dissociative identity disorder","Derealization disorder"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── I/O Pre-Assessment (as030000-...-001) ─────────────────────
-('ff030100-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000003', 'I/O psychology applies psychological principles to:',
- '["Clinical settings","Educational institutions","The workplace","Community health"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030100-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000003', 'The Hawthorne effect refers to:',
- '["Increased productivity from better lighting","Behavior change due to being observed","Reduced morale from monotony","Enhanced creativity in teams"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030100-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Job analysis is the process of:',
- '["Evaluating employee performance","Identifying job duties and requirements","Designing compensation packages","Measuring job satisfaction"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030100-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000003', 'Organizational culture refers to:',
- '["Formal company policies","Shared values and norms in an organization","Management hierarchy","Employee benefits"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030100-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000003', 'Which motivation theory distinguishes hygiene factors from motivators?',
- '["Maslow''s hierarchy","McClelland''s needs theory","Herzberg''s two-factor theory","Vroom''s expectancy theory"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── I/O Post-Assessment (as030000-...-002) ────────────────────
-('ff030200-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000003', 'Organizational commitment refers to:',
- '["Following rules strictly","Employee''s emotional attachment to their organization","Time spent at work","Meeting deadlines"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030200-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000003', 'Which leadership style involves sharing decision-making with employees?',
- '["Autocratic","Laissez-faire","Transactional","Participative"]', 3, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030200-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Work-life balance interventions primarily aim to reduce:',
- '["Productivity","Absenteeism and burnout","Employee training costs","Organizational hierarchy"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030200-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000003', '360-degree feedback collects input from:',
- '["Direct supervisor only","HR department","Multiple sources including peers and subordinates","Customers only"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030200-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000003', 'Occupational stress is best managed through:',
- '["Ignoring stressors","Increased work hours","Coping strategies and organizational support","Social isolation"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Intro to Industrial Psychology (as030000-...-003) ──
-('ff030300-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000003', 'Hugo Münsterberg is considered a founder of:',
- '["Clinical psychology","Industrial psychology","School psychology","Neuropsychology"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030300-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000003', 'Scientific management was developed by:',
- '["Elton Mayo","Frederick Taylor","Max Weber","Abraham Maslow"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030300-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Which of the following is NOT a subfield of I/O psychology?',
- '["Personnel psychology","Organizational psychology","Forensic psychology","Human factors"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030300-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000003', 'The primary goal of personnel psychology is:',
- '["Team building","Selecting and evaluating employees","Reducing workplace conflict","Designing office spaces"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030300-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000003', 'The Hawthorne studies were conducted at:',
- '["General Motors","Western Electric Company","Ford Motors","IBM"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Legal Issues (as030000-...-004) ────────────────────
-('ff030400-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000003', 'Title VII of the Civil Rights Act prohibits discrimination based on:',
- '["Age","Disability","Race, color, religion, sex, and national origin","Salary"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030400-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000003', 'Adverse impact occurs when a selection procedure:',
- '["Favors all candidates equally","Disproportionately screens out a protected group","Increases diversity","Passes all applicants"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030400-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'The 4/5ths rule is used to detect:',
- '["Wage gaps","Adverse impact in selection","Age discrimination","Harassment"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030400-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000003', 'Quid pro quo harassment involves:',
- '["A hostile work environment","Job benefits tied to sexual favors","Verbal abuse","Unequal pay"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030400-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000003', 'Reasonable accommodation under the ADA means:',
- '["Removing all physical barriers","Modifications that enable a qualified employee with a disability to work","Hiring quotas","Free medical care"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - Employee Selection (as030000-...-005) ──────────────
-('ff030500-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000003', 'Criterion validity measures how well a test predicts:',
- '["Cultural fit","Job performance","Intelligence","Personality traits"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030500-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000003', 'A structured interview differs from an unstructured one by:',
- '["Being longer","Using identical questions for all candidates","Focusing on personality","Being conducted by multiple interviewers"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030500-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000003', 'Assessment centers evaluate candidates using:',
- '["Written tests only","Multiple exercises simulating job tasks","Personality questionnaires alone","Background checks"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030500-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000003', 'Which selection method has the highest predictive validity for job performance?',
- '["Unstructured interview","Reference checks","Work sample tests","Graphology"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff030500-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000003', 'Reliability in a selection test refers to:',
- '["Measuring the right construct","Consistency of scores across time and conditions","Legal compliance","Cost-effectiveness"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── PA Pre-Assessment (as040000-...-001) ──────────────────────
-('ff040100-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000004', 'Psychological assessment is best defined as:',
- '["Administering a single test","A systematic process of gathering and evaluating psychological data","Diagnosing mental illness","Measuring IQ only"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040100-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000004', 'Reliability in psychological testing refers to:',
- '["The test measures what it claims to","Consistent results across administrations","Normative comparisons","Cultural fairness"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040100-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000004', 'Validity refers to whether a test:',
- '["Produces consistent results","Measures what it is supposed to measure","Is easy to administer","Has norms"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040100-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'A norm-referenced test compares a test-taker to:',
- '["A fixed standard","A criterion","A normative sample","The test-taker''s previous scores"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040100-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000004', 'The standard error of measurement reflects:',
- '["Test bias","The expected variability in scores due to measurement error","The range of normed scores","Cultural differences"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── PA Post-Assessment (as040000-...-002) ─────────────────────
-('ff040200-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000004', 'A psychological report should always include:',
- '["A diagnosis","Referral question, results, interpretation, and recommendations","Raw scores only","Clinician''s personal opinion"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040200-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000004', 'Projective tests are based on the assumption that:',
- '["Intelligence is measurable","People project unconscious material onto ambiguous stimuli","Behavior predicts performance","Responses are objective"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040200-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000004', 'The MMPI is primarily used to assess:',
- '["Intelligence","Personality and psychopathology","Academic achievement","Neurological function"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040200-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Test bias exists when a test:',
- '["Has low reliability","Produces systematically different results for different groups unfairly","Is too long","Has no normative data"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040200-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000004', 'Informed consent in assessment means the client:',
- '["Signs a waiver","Understands the purpose and nature of the assessment","Waives the right to results","Agrees to all recommendations"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - PA History v1 (as040000-...-003) ───────────────────
-('ff040300-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000004', 'The first formal intelligence test was developed by:',
- '["Wundt","Galton","Binet and Simon","Terman"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040300-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000004', 'The Army Alpha and Beta tests were developed for:',
- '["Educational placement","Clinical diagnosis","Military recruitment in WWI","Vocational guidance"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040300-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000004', 'Francis Galton''s contribution to psychology included:',
- '["Developing psychotherapy","Studying individual differences and mental testing","Creating the DSM","Founding behaviorism"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040300-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'The concept of mental age was introduced by:',
- '["Galton","Cattell","Binet","Terman"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040300-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000004', 'The IQ formula (MA/CA × 100) was devised by:',
- '["Binet","Stern","Terman","Wechsler"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - PA History v2 (as040000-...-004) ───────────────────
-('ff040400-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000004', 'The Wechsler scales differ from the Stanford-Binet by providing:',
- '["A single global IQ","Deviation IQ and index scores","Faster administration","Age-equivalent scores only"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040400-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000004', 'The Minnesota Multiphasic Personality Inventory (MMPI) was developed in:',
- '["1920s","1930s","1940s","1950s"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040400-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000004', 'The Rorschach Inkblot Test was published in:',
- '["1905","1921","1935","1949"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040400-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'The movement toward evidence-based assessment emphasizes:',
- '["Intuitive clinical judgment","Using only projective tests","Tests with demonstrated reliability and validity","Minimal documentation"]', 2, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040400-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000004', 'Computerized adaptive testing adjusts difficulty based on:',
- '["Time remaining","The examinee''s previous responses","Random selection","Examiner preference"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-
--- ── Quiz - PA Education (as040000-...-005) ────────────────────
-('ff040500-0000-0000-0000-000000000001', '00000000-0000-0000-0002-000000000004', 'An IEP (Individualized Education Program) is designed for:',
- '["Gifted students only","Students with disabilities","All students","Students with behavioral issues only"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040500-0000-0000-0000-000000000002', '00000000-0000-0000-0002-000000000004', 'Curriculum-based measurement (CBM) assesses:',
- '["Intelligence","A student''s performance within the school curriculum","Personality","Neurological function"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040500-0000-0000-0000-000000000003', '00000000-0000-0000-0002-000000000004', 'Specific learning disability is characterized by:',
- '["Low overall IQ","Significant deficit in one academic area despite adequate intelligence","Global developmental delay","Behavioral disorder"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040500-0000-0000-0000-000000000004', '00000000-0000-0000-0002-000000000004', 'Dynamic assessment focuses on:',
- '["What a student currently knows","A student''s potential to learn with guided support","Standardized test performance","Academic history"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00'),
-('ff040500-0000-0000-0000-000000000005', '00000000-0000-0000-0002-000000000004', 'Response to Intervention (RTI) is used to:',
- '["Replace IQ testing","Identify and support students at risk early","Diagnose ADHD","Assess gifted students"]', 1, '2026-02-23 08:00:00', '2026-02-23 08:00:00');
-
-
--- ================================================================
--- ASSESSMENT_QUESTIONS  (link each assessment to its 5 questions)
--- ================================================================
-
-INSERT INTO assessment_questions (assessment_id, question_id) VALUES
--- DevPsy Pre
-('ee000001-0000-0000-0000-000000000001','ff010100-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000001','ff010100-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000001','ff010100-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000001','ff010100-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000001','ff010100-0000-0000-0000-000000000005'),
--- DevPsy Post
-('ee000001-0000-0000-0000-000000000002','ff010200-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000002','ff010200-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000002','ff010200-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000002','ff010200-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000002','ff010200-0000-0000-0000-000000000005'),
--- Quiz Prenatal
-('ee000001-0000-0000-0000-000000000003','ff010300-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000003','ff010300-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000003','ff010300-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000003','ff010300-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000003','ff010300-0000-0000-0000-000000000005'),
--- Quiz Infancy
-('ee000001-0000-0000-0000-000000000004','ff010400-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000004','ff010400-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000004','ff010400-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000004','ff010400-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000004','ff010400-0000-0000-0000-000000000005'),
--- Quiz Early Childhood
-('ee000001-0000-0000-0000-000000000005','ff010500-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000005','ff010500-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000005','ff010500-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000005','ff010500-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000005','ff010500-0000-0000-0000-000000000005'),
--- Quiz Middle & Late Childhood
-('ee000001-0000-0000-0000-000000000006','ff010600-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000006','ff010600-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000006','ff010600-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000006','ff010600-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000006','ff010600-0000-0000-0000-000000000005'),
--- Quiz Adolescence
-('ee000001-0000-0000-0000-000000000007','ff010700-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000007','ff010700-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000007','ff010700-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000007','ff010700-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000007','ff010700-0000-0000-0000-000000000005'),
--- Quiz Young Adulthood
-('ee000001-0000-0000-0000-000000000008','ff010800-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000008','ff010800-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000008','ff010800-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000008','ff010800-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000008','ff010800-0000-0000-0000-000000000005'),
--- Quiz Middle Adulthood
-('ee000001-0000-0000-0000-000000000009','ff010900-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000009','ff010900-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000009','ff010900-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000009','ff010900-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000009','ff010900-0000-0000-0000-000000000005'),
--- Quiz Old Age
-('ee000001-0000-0000-0000-000000000010','ff011000-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000010','ff011000-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000010','ff011000-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000010','ff011000-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000010','ff011000-0000-0000-0000-000000000005'),
--- Quiz Death
-('ee000001-0000-0000-0000-000000000011','ff011100-0000-0000-0000-000000000001'),
-('ee000001-0000-0000-0000-000000000011','ff011100-0000-0000-0000-000000000002'),
-('ee000001-0000-0000-0000-000000000011','ff011100-0000-0000-0000-000000000003'),
-('ee000001-0000-0000-0000-000000000011','ff011100-0000-0000-0000-000000000004'),
-('ee000001-0000-0000-0000-000000000011','ff011100-0000-0000-0000-000000000005'),
--- AbPsy Pre
-('ee000002-0000-0000-0000-000000000001','ff020100-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000001','ff020100-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000001','ff020100-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000001','ff020100-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000001','ff020100-0000-0000-0000-000000000005'),
--- AbPsy Post
-('ee000002-0000-0000-0000-000000000002','ff020200-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000002','ff020200-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000002','ff020200-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000002','ff020200-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000002','ff020200-0000-0000-0000-000000000005'),
--- Quiz Phase 1
-('ee000002-0000-0000-0000-000000000003','ff020300-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000003','ff020300-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000003','ff020300-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000003','ff020300-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000003','ff020300-0000-0000-0000-000000000005'),
--- Quiz Phase 2
-('ee000002-0000-0000-0000-000000000004','ff020400-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000004','ff020400-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000004','ff020400-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000004','ff020400-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000004','ff020400-0000-0000-0000-000000000005'),
--- Quiz Phase 3
-('ee000002-0000-0000-0000-000000000005','ff020500-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000005','ff020500-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000005','ff020500-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000005','ff020500-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000005','ff020500-0000-0000-0000-000000000005'),
--- Quiz Phase 4
-('ee000002-0000-0000-0000-000000000006','ff020600-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000006','ff020600-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000006','ff020600-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000006','ff020600-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000006','ff020600-0000-0000-0000-000000000005'),
--- Quiz Phase 5
-('ee000002-0000-0000-0000-000000000007','ff020700-0000-0000-0000-000000000001'),
-('ee000002-0000-0000-0000-000000000007','ff020700-0000-0000-0000-000000000002'),
-('ee000002-0000-0000-0000-000000000007','ff020700-0000-0000-0000-000000000003'),
-('ee000002-0000-0000-0000-000000000007','ff020700-0000-0000-0000-000000000004'),
-('ee000002-0000-0000-0000-000000000007','ff020700-0000-0000-0000-000000000005'),
--- I/O Pre
-('ee000003-0000-0000-0000-000000000001','ff030100-0000-0000-0000-000000000001'),
-('ee000003-0000-0000-0000-000000000001','ff030100-0000-0000-0000-000000000002'),
-('ee000003-0000-0000-0000-000000000001','ff030100-0000-0000-0000-000000000003'),
-('ee000003-0000-0000-0000-000000000001','ff030100-0000-0000-0000-000000000004'),
-('ee000003-0000-0000-0000-000000000001','ff030100-0000-0000-0000-000000000005'),
--- I/O Post
-('ee000003-0000-0000-0000-000000000002','ff030200-0000-0000-0000-000000000001'),
-('ee000003-0000-0000-0000-000000000002','ff030200-0000-0000-0000-000000000002'),
-('ee000003-0000-0000-0000-000000000002','ff030200-0000-0000-0000-000000000003'),
-('ee000003-0000-0000-0000-000000000002','ff030200-0000-0000-0000-000000000004'),
-('ee000003-0000-0000-0000-000000000002','ff030200-0000-0000-0000-000000000005'),
--- Quiz Intro to I/O
-('ee000003-0000-0000-0000-000000000003','ff030300-0000-0000-0000-000000000001'),
-('ee000003-0000-0000-0000-000000000003','ff030300-0000-0000-0000-000000000002'),
-('ee000003-0000-0000-0000-000000000003','ff030300-0000-0000-0000-000000000003'),
-('ee000003-0000-0000-0000-000000000003','ff030300-0000-0000-0000-000000000004'),
-('ee000003-0000-0000-0000-000000000003','ff030300-0000-0000-0000-000000000005'),
--- Quiz Legal Issues
-('ee000003-0000-0000-0000-000000000004','ff030400-0000-0000-0000-000000000001'),
-('ee000003-0000-0000-0000-000000000004','ff030400-0000-0000-0000-000000000002'),
-('ee000003-0000-0000-0000-000000000004','ff030400-0000-0000-0000-000000000003'),
-('ee000003-0000-0000-0000-000000000004','ff030400-0000-0000-0000-000000000004'),
-('ee000003-0000-0000-0000-000000000004','ff030400-0000-0000-0000-000000000005'),
--- Quiz Employee Selection
-('ee000003-0000-0000-0000-000000000005','ff030500-0000-0000-0000-000000000001'),
-('ee000003-0000-0000-0000-000000000005','ff030500-0000-0000-0000-000000000002'),
-('ee000003-0000-0000-0000-000000000005','ff030500-0000-0000-0000-000000000003'),
-('ee000003-0000-0000-0000-000000000005','ff030500-0000-0000-0000-000000000004'),
-('ee000003-0000-0000-0000-000000000005','ff030500-0000-0000-0000-000000000005'),
--- PA Pre
-('ee000004-0000-0000-0000-000000000001','ff040100-0000-0000-0000-000000000001'),
-('ee000004-0000-0000-0000-000000000001','ff040100-0000-0000-0000-000000000002'),
-('ee000004-0000-0000-0000-000000000001','ff040100-0000-0000-0000-000000000003'),
-('ee000004-0000-0000-0000-000000000001','ff040100-0000-0000-0000-000000000004'),
-('ee000004-0000-0000-0000-000000000001','ff040100-0000-0000-0000-000000000005'),
--- PA Post
-('ee000004-0000-0000-0000-000000000002','ff040200-0000-0000-0000-000000000001'),
-('ee000004-0000-0000-0000-000000000002','ff040200-0000-0000-0000-000000000002'),
-('ee000004-0000-0000-0000-000000000002','ff040200-0000-0000-0000-000000000003'),
-('ee000004-0000-0000-0000-000000000002','ff040200-0000-0000-0000-000000000004'),
-('ee000004-0000-0000-0000-000000000002','ff040200-0000-0000-0000-000000000005'),
--- Quiz PA History v1
-('ee000004-0000-0000-0000-000000000003','ff040300-0000-0000-0000-000000000001'),
-('ee000004-0000-0000-0000-000000000003','ff040300-0000-0000-0000-000000000002'),
-('ee000004-0000-0000-0000-000000000003','ff040300-0000-0000-0000-000000000003'),
-('ee000004-0000-0000-0000-000000000003','ff040300-0000-0000-0000-000000000004'),
-('ee000004-0000-0000-0000-000000000003','ff040300-0000-0000-0000-000000000005'),
--- Quiz PA History v2
-('ee000004-0000-0000-0000-000000000004','ff040400-0000-0000-0000-000000000001'),
-('ee000004-0000-0000-0000-000000000004','ff040400-0000-0000-0000-000000000002'),
-('ee000004-0000-0000-0000-000000000004','ff040400-0000-0000-0000-000000000003'),
-('ee000004-0000-0000-0000-000000000004','ff040400-0000-0000-0000-000000000004'),
-('ee000004-0000-0000-0000-000000000004','ff040400-0000-0000-0000-000000000005'),
--- Quiz Education
-('ee000004-0000-0000-0000-000000000005','ff040500-0000-0000-0000-000000000001'),
-('ee000004-0000-0000-0000-000000000005','ff040500-0000-0000-0000-000000000002'),
-('ee000004-0000-0000-0000-000000000005','ff040500-0000-0000-0000-000000000003'),
-('ee000004-0000-0000-0000-000000000005','ff040500-0000-0000-0000-000000000004'),
-('ee000004-0000-0000-0000-000000000005','ff040500-0000-0000-0000-000000000005');
-
-
--- ================================================================
--- SEED SUMMARY
--- Roles:        3  (ADMIN, FACULTY, STUDENT)
--- Users:        20 (3 admin, 5 faculty, 12 student)
--- Subjects:     4
--- Modules:      20 (9 DevPsy, 5 AbPsy, 3 I/O, 3 PA)
--- Assessments:  32 (8 pre/post + 24 quizzes)
--- Questions:   160 (5 per assessment)
--- ================================================================
+-- ============================================================
+-- seed.sql  —  psych_db initial dataset
+-- Run AFTER schema.sql
+-- Passwords are bcrypt hashes of the plain-text shown in comments.
+-- ============================================================
+
+BEGIN;
+
+-- ────────────────────────────────────────────────────────────
+-- 1. SYSTEM SETTINGS
+-- ────────────────────────────────────────────────────────────
+INSERT INTO system_settings (
+    id, maintenance_mode, maintenance_banner,
+    require_content_approval, allow_public_registration,
+    institutional_passing_grade, institution_name, academic_year, updated_at
+) VALUES (
+    1, FALSE, NULL,
+    TRUE, FALSE,
+    75, 'Philippine Psychology Review Institute', '2024-2025', NOW()
+) ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 2. ROLES  (system roles, cannot be deleted)
+-- ────────────────────────────────────────────────────────────
+INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
+    ('00000000-0000-0000-0000-000000000001', 'ADMIN',
+        '["manage_users","manage_content","manage_assessments","manage_subjects",
+          "manage_settings","view_analytics","approve_content","manage_whitelist",
+          "view_logs","manage_roles"]',
+        TRUE, NOW()),
+    ('00000000-0000-0000-0000-000000000002', 'FACULTY',
+        '["create_content","submit_content","create_assessments","submit_assessments",
+          "view_analytics","manage_student_whitelist","view_subjects"]',
+        TRUE, NOW()),
+    ('00000000-0000-0000-0000-000000000003', 'STUDENT',
+        '["view_content","take_assessments","view_progress","view_subjects"]',
+        TRUE, NOW())
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 3. USERS
+-- Passwords (bcrypt $2b$12$ rounds):
+--   admin@ppri.edu       → Admin@1234
+--   faculty1@ppri.edu    → Faculty@1234
+--   faculty2@ppri.edu    → Faculty@1234
+--   student1–5@ppri.edu  → Student@1234
+-- ────────────────────────────────────────────────────────────
+INSERT INTO users (
+    id, institutional_id, first_name, middle_name, last_name,
+    email, password, role_id, status, department, date_created
+) VALUES
+-- ── Admin ────────────────────────────────────────────────────
+('10000000-0000-0000-0000-000000000001',
+ 'ADMIN-001', 'Ana', 'Cruz', 'Reyes',
+ 'admin@ppri.edu',
+ '$2b$12$KIXbhELtNrGF7JK7CzIxiONH5V7M3G0GzGPHMK5JxGmE0s0P2yOZC',
+ '00000000-0000-0000-0000-000000000001', 'ACTIVE', 'Administration', NOW() - INTERVAL '180 days'),
+
+-- ── Faculty ──────────────────────────────────────────────────
+('10000000-0000-0000-0000-000000000002',
+ 'FAC-2024-001', 'Marco', 'Antonio', 'Santos',
+ 'faculty1@ppri.edu',
+ '$2b$12$X8RhYvBn7MtK3O4P5qAh8eP2Z3KMQd9hW1aJlH4yNxVRmUxS1sOaC',
+ '00000000-0000-0000-0000-000000000002', 'ACTIVE', 'Developmental Psychology', NOW() - INTERVAL '150 days'),
+
+('10000000-0000-0000-0000-000000000003',
+ 'FAC-2024-002', 'Elena', 'Grace', 'Villanueva',
+ 'faculty2@ppri.edu',
+ '$2b$12$X8RhYvBn7MtK3O4P5qAh8eP2Z3KMQd9hW1aJlH4yNxVRmUxS1sOaC',
+ '00000000-0000-0000-0000-000000000002', 'ACTIVE', 'Clinical Psychology', NOW() - INTERVAL '120 days'),
+
+-- ── Students ─────────────────────────────────────────────────
+('10000000-0000-0000-0000-000000000011',
+ '2024-PSY-001', 'Jose', 'Miguel', 'Garcia',
+ 'student1@ppri.edu',
+ '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
+ '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '90 days'),
+
+('10000000-0000-0000-0000-000000000012',
+ '2024-PSY-002', 'Maria', 'Luisa', 'Fernandez',
+ 'student2@ppri.edu',
+ '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
+ '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '85 days'),
+
+('10000000-0000-0000-0000-000000000013',
+ '2024-PSY-003', 'Ricardo', 'Paulo', 'Mendoza',
+ 'student3@ppri.edu',
+ '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
+ '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '80 days'),
+
+('10000000-0000-0000-0000-000000000014',
+ '2024-PSY-004', 'Clara', 'Rose', 'Torres',
+ 'student4@ppri.edu',
+ '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
+ '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '75 days'),
+
+('10000000-0000-0000-0000-000000000015',
+ '2024-PSY-005', 'Diego', 'Luis', 'Bautista',
+ 'student5@ppri.edu',
+ '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
+ '00000000-0000-0000-0000-000000000003', 'PENDING', 'BS Psychology', NOW() - INTERVAL '5 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 4. WHITELIST
+-- ────────────────────────────────────────────────────────────
+INSERT INTO whitelist (
+    id, first_name, middle_name, last_name,
+    institutional_id, email, role, status, date_added
+) VALUES
+-- Faculty whitelist entries
+('20000000-0000-0000-0000-000000000001',
+ 'Marco',  'Antonio', 'Santos',    'FAC-2024-001', 'faculty1@ppri.edu', 'FACULTY', 'REGISTERED', NOW() - INTERVAL '160 days'),
+('20000000-0000-0000-0000-000000000002',
+ 'Elena',  'Grace',   'Villanueva','FAC-2024-002', 'faculty2@ppri.edu', 'FACULTY', 'REGISTERED', NOW() - INTERVAL '130 days'),
+-- Student whitelist entries
+('20000000-0000-0000-0000-000000000011',
+ 'Jose',   'Miguel',  'Garcia',    '2024-PSY-001', 'student1@ppri.edu', 'STUDENT', 'REGISTERED', NOW() - INTERVAL '100 days'),
+('20000000-0000-0000-0000-000000000012',
+ 'Maria',  'Luisa',   'Fernandez', '2024-PSY-002', 'student2@ppri.edu', 'STUDENT', 'REGISTERED', NOW() - INTERVAL '95 days'),
+('20000000-0000-0000-0000-000000000013',
+ 'Ricardo','Paulo',   'Mendoza',   '2024-PSY-003', 'student3@ppri.edu', 'STUDENT', 'REGISTERED', NOW() - INTERVAL '90 days'),
+('20000000-0000-0000-0000-000000000014',
+ 'Clara',  'Rose',    'Torres',    '2024-PSY-004', 'student4@ppri.edu', 'STUDENT', 'REGISTERED', NOW() - INTERVAL '85 days'),
+('20000000-0000-0000-0000-000000000015',
+ 'Diego',  'Luis',    'Bautista',  '2024-PSY-005', 'student5@ppri.edu', 'STUDENT', 'REGISTERED', NOW() - INTERVAL '10 days'),
+-- Pending (not yet registered) students
+('20000000-0000-0000-0000-000000000016',
+ 'Sofia',  NULL,      'Aquino',    '2024-PSY-006', 'student6@ppri.edu', 'STUDENT', 'PENDING',    NOW() - INTERVAL '3 days'),
+('20000000-0000-0000-0000-000000000017',
+ 'Miguel', NULL,      'Cruz',      '2024-PSY-007', 'student7@ppri.edu', 'STUDENT', 'PENDING',    NOW() - INTERVAL '2 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 5. SUBJECTS
+-- ────────────────────────────────────────────────────────────
+INSERT INTO subjects (id, name, description, color, status, created_by, created_at, updated_at) VALUES
+('30000000-0000-0000-0000-000000000001',
+ 'General Psychology',
+ 'Foundational concepts, theories, and applications of psychology covering behavior, cognition, and mental processes.',
+ '#6366f1', 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '160 days', NOW() - INTERVAL '160 days'),
+
+('30000000-0000-0000-0000-000000000002',
+ 'Developmental Psychology',
+ 'Human development across the lifespan from infancy through late adulthood, including physical, cognitive, and social development.',
+ '#8b5cf6', 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '155 days', NOW() - INTERVAL '155 days'),
+
+('30000000-0000-0000-0000-000000000003',
+ 'Abnormal Psychology',
+ 'Classification, etiology, assessment, and treatment of psychological disorders and abnormal behavior patterns.',
+ '#ec4899', 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '150 days', NOW() - INTERVAL '150 days'),
+
+('30000000-0000-0000-0000-000000000004',
+ 'Social Psychology',
+ 'How individuals think, feel, and behave in social contexts; group dynamics, attitudes, persuasion, and social influence.',
+ '#22c55e', 'APPROVED', '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '140 days', NOW() - INTERVAL '140 days'),
+
+('30000000-0000-0000-0000-000000000005',
+ 'Psychological Assessment',
+ 'Principles and practices of psychological testing, measurement, and evaluation including intelligence and personality tests.',
+ '#f97316', 'APPROVED', '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '130 days', NOW() - INTERVAL '130 days'),
+
+('30000000-0000-0000-0000-000000000006',
+ 'Industrial-Organizational Psychology',
+ 'Application of psychological principles and research methods to workplace settings, covering personnel, motivation, and organizational behavior.',
+ '#14b8a6', 'PENDING', '10000000-0000-0000-0000-000000000003', NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 6. TOPICS
+-- ────────────────────────────────────────────────────────────
+INSERT INTO topics (id, subject_id, parent_id, title, description, sort_order, status, created_by, created_at) VALUES
+
+-- General Psychology
+('40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', NULL,
+ 'History and Schools of Thought',
+ 'Major schools of psychology from structuralism to contemporary cognitive neuroscience.', 1, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '158 days'),
+('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-000000000001', NULL,
+ 'Research Methods in Psychology',
+ 'Scientific method, experimental design, statistics, and ethical considerations in psychological research.', 2, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '157 days'),
+('40000000-0000-0000-0000-000000000003', '30000000-0000-0000-0000-000000000001', NULL,
+ 'Biological Bases of Behavior',
+ 'Nervous system, brain structure, neurotransmitters, genetics, and their influence on behavior.', 3, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '156 days'),
+-- Subtopics under Biological Bases
+('40000000-0000-0000-0000-000000000004', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000003',
+ 'Neurons and Neural Communication', NULL, 1, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '155 days'),
+('40000000-0000-0000-0000-000000000005', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000003',
+ 'Brain Structures and Functions', NULL, 2, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '154 days'),
+('40000000-0000-0000-0000-000000000006', '30000000-0000-0000-0000-000000000001', NULL,
+ 'Sensation and Perception', NULL, 4, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '150 days'),
+('40000000-0000-0000-0000-000000000007', '30000000-0000-0000-0000-000000000001', NULL,
+ 'States of Consciousness', NULL, 5, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '148 days'),
+('40000000-0000-0000-0000-000000000008', '30000000-0000-0000-0000-000000000001', NULL,
+ 'Learning and Conditioning', NULL, 6, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '146 days'),
+('40000000-0000-0000-0000-000000000009', '30000000-0000-0000-0000-000000000001', NULL,
+ 'Memory',
+ 'Encoding, storage, retrieval, and forgetting.', 7, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '144 days'),
+('40000000-0000-0000-0000-000000000010', '30000000-0000-0000-0000-000000000001', NULL,
+ 'Motivation and Emotion', NULL, 8, 'APPROVED',
+ '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '142 days'),
+
+-- Developmental Psychology
+('40000000-0000-0000-0000-000000000011', '30000000-0000-0000-0000-000000000002', NULL,
+ 'Prenatal Development and Birth', NULL, 1, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '150 days'),
+('40000000-0000-0000-0000-000000000012', '30000000-0000-0000-0000-000000000002', NULL,
+ 'Infancy and Toddlerhood', NULL, 2, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '148 days'),
+('40000000-0000-0000-0000-000000000013', '30000000-0000-0000-0000-000000000002', NULL,
+ 'Early and Middle Childhood', NULL, 3, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '146 days'),
+('40000000-0000-0000-0000-000000000014', '30000000-0000-0000-0000-000000000002', NULL,
+ 'Adolescence', NULL, 4, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '144 days'),
+('40000000-0000-0000-0000-000000000015', '30000000-0000-0000-0000-000000000002', NULL,
+ 'Adulthood and Aging', NULL, 5, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '142 days'),
+
+-- Abnormal Psychology
+('40000000-0000-0000-0000-000000000021', '30000000-0000-0000-0000-000000000003', NULL,
+ 'Models of Abnormality', NULL, 1, 'APPROVED',
+ '10000000-0000-0000-0000-000000000003', NOW() - INTERVAL '145 days'),
+('40000000-0000-0000-0000-000000000022', '30000000-0000-0000-0000-000000000003', NULL,
+ 'Anxiety Disorders', NULL, 2, 'APPROVED',
+ '10000000-0000-0000-0000-000000000003', NOW() - INTERVAL '143 days'),
+('40000000-0000-0000-0000-000000000023', '30000000-0000-0000-0000-000000000003', NULL,
+ 'Mood Disorders', NULL, 3, 'APPROVED',
+ '10000000-0000-0000-0000-000000000003', NOW() - INTERVAL '141 days'),
+('40000000-0000-0000-0000-000000000024', '30000000-0000-0000-0000-000000000003', NULL,
+ 'Schizophrenia Spectrum Disorders', NULL, 4, 'APPROVED',
+ '10000000-0000-0000-0000-000000000003', NOW() - INTERVAL '139 days'),
+
+-- Social Psychology
+('40000000-0000-0000-0000-000000000031', '30000000-0000-0000-0000-000000000004', NULL,
+ 'Social Cognition and Perception', NULL, 1, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '135 days'),
+('40000000-0000-0000-0000-000000000032', '30000000-0000-0000-0000-000000000004', NULL,
+ 'Attitudes and Attitude Change', NULL, 2, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '133 days'),
+('40000000-0000-0000-0000-000000000033', '30000000-0000-0000-0000-000000000004', NULL,
+ 'Social Influence', NULL, 3, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '131 days'),
+
+-- Psychological Assessment
+('40000000-0000-0000-0000-000000000041', '30000000-0000-0000-0000-000000000005', NULL,
+ 'Principles of Psychological Testing', NULL, 1, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '125 days'),
+('40000000-0000-0000-0000-000000000042', '30000000-0000-0000-0000-000000000005', NULL,
+ 'Intelligence and Cognitive Assessment', NULL, 2, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '123 days'),
+('40000000-0000-0000-0000-000000000043', '30000000-0000-0000-0000-000000000005', NULL,
+ 'Personality Assessment', NULL, 3, 'APPROVED',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '121 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 7. CONTENT MODULES
+-- ────────────────────────────────────────────────────────────
+INSERT INTO content_modules (
+    id, title, subject_id, topic_id, content, format, status,
+    revision_notes, submission_count, author_id, author_name,
+    last_updated, date_created
+) VALUES
+-- General Psychology modules
+('50000000-0000-0000-0000-000000000001',
+ 'Introduction to Psychology: A Brief History',
+ '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+ 'Psychology evolved from philosophy and physiology. Wilhelm Wundt founded the first psychology lab in 1879 in Leipzig, Germany, marking the birth of psychology as an empirical science. Major schools include Structuralism (Wundt, Titchener), Functionalism (James), Behaviorism (Watson, Skinner), Gestalt (Wertheimer), Psychoanalysis (Freud), Humanistic (Maslow, Rogers), Cognitive, and the current Biopsychosocial approach.',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000002',
+ 'Marco Santos', NOW() - INTERVAL '140 days', NOW() - INTERVAL '145 days'),
+
+('50000000-0000-0000-0000-000000000002',
+ 'Research Methods: Experimental Design Basics',
+ '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000002',
+ 'The scientific method involves: (1) identifying a problem, (2) forming a hypothesis, (3) designing a study, (4) collecting data, (5) analyzing results, (6) drawing conclusions, and (7) communicating findings. Key concepts: independent variable (IV), dependent variable (DV), operational definitions, random assignment, control groups, confounds, and replication.',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000002',
+ 'Marco Santos', NOW() - INTERVAL '135 days', NOW() - INTERVAL '140 days'),
+
+('50000000-0000-0000-0000-000000000003',
+ 'The Neuron: Structure and Function',
+ '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000004',
+ 'Neurons are specialized cells that transmit information. Key parts: dendrites (receive signals), cell body/soma, axon (transmits signals), axon terminals, myelin sheath (speeds transmission). Types: sensory, motor, interneurons. Neural communication involves: resting potential (-70mV), action potential, refractory period, and synaptic transmission via neurotransmitters (e.g., dopamine, serotonin, acetylcholine, GABA, glutamate).',
+ 'TEXT', 'APPROVED', '[]', 2, '10000000-0000-0000-0000-000000000002',
+ 'Marco Santos', NOW() - INTERVAL '130 days', NOW() - INTERVAL '135 days'),
+
+('50000000-0000-0000-0000-000000000004',
+ 'Brain Anatomy: Lobes and Their Functions',
+ '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000005',
+ 'The cerebral cortex is divided into 4 lobes: (1) Frontal — reasoning, planning, motor control, Broca''s area; (2) Parietal — sensory processing, spatial awareness, somatosensory cortex; (3) Occipital — visual processing; (4) Temporal — auditory processing, language comprehension, Wernicke''s area. Key subcortical structures: hippocampus (memory), amygdala (emotion/fear), thalamus (relay station), hypothalamus (homeostasis), cerebellum (coordination), brainstem (basic life functions).',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000003',
+ 'Elena Villanueva', NOW() - INTERVAL '125 days', NOW() - INTERVAL '130 days'),
+
+-- Developmental Psychology modules
+('50000000-0000-0000-0000-000000000005',
+ 'Theories of Development: Piaget, Vygotsky, Erikson',
+ '30000000-0000-0000-0000-000000000002', '40000000-0000-0000-0000-000000000013',
+ 'Piaget''s Cognitive Stages: Sensorimotor (0-2), Preoperational (2-7), Concrete Operational (7-11), Formal Operational (12+). Key concepts: schemas, assimilation, accommodation, equilibration, object permanence, conservation. Vygotsky: Zone of Proximal Development (ZPD), scaffolding, social learning. Erikson''s 8 Psychosocial Stages: Trust vs. Mistrust → Integrity vs. Despair.',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000002',
+ 'Marco Santos', NOW() - INTERVAL '120 days', NOW() - INTERVAL '125 days'),
+
+('50000000-0000-0000-0000-000000000006',
+ 'Adolescent Development: Identity and Peer Influence',
+ '30000000-0000-0000-0000-000000000002', '40000000-0000-0000-0000-000000000014',
+ 'Adolescence (12–18 years) is characterized by puberty, formal operational thinking, and identity formation. Erikson''s stage 5: Identity vs. Role Confusion — Marcia''s four identity statuses: diffusion, foreclosure, moratorium, and achievement. Social influences: peer relationships, social media, family communication styles. Adolescent brain: prefrontal cortex still developing (impulse control, risk assessment).',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000002',
+ 'Marco Santos', NOW() - INTERVAL '115 days', NOW() - INTERVAL '120 days'),
+
+-- Abnormal Psychology modules
+('50000000-0000-0000-0000-000000000007',
+ 'The DSM-5 and Classification of Mental Disorders',
+ '30000000-0000-0000-0000-000000000003', '40000000-0000-0000-0000-000000000021',
+ 'The DSM-5 (Diagnostic and Statistical Manual of Mental Disorders, 5th Edition, 2013) uses a categorical classification system. Key changes from DSM-IV: removal of multiaxial system, addition of specifiers and dimensional assessments. Major categories: Neurodevelopmental, Schizophrenia Spectrum, Bipolar, Depressive, Anxiety, OCD-related, Trauma-related, Dissociative, Somatic, Feeding/Eating, Elimination, Sleep-Wake, Sexual, Gender Dysphoria, Disruptive, Substance-related, Neurocognitive, Personality, Paraphilic disorders.',
+ 'TEXT', 'APPROVED', '[]', 2, '10000000-0000-0000-0000-000000000003',
+ 'Elena Villanueva', NOW() - INTERVAL '110 days', NOW() - INTERVAL '115 days'),
+
+('50000000-0000-0000-0000-000000000008',
+ 'Anxiety Disorders: Overview and Treatment',
+ '30000000-0000-0000-0000-000000000003', '40000000-0000-0000-0000-000000000022',
+ 'Anxiety disorders are the most prevalent mental disorders. Types: Generalized Anxiety Disorder (GAD), Panic Disorder, Specific Phobias, Social Anxiety Disorder (SAD), Agoraphobia, Separation Anxiety. Core feature: excessive fear/anxiety disproportionate to the actual threat. Biological: amygdala hyperactivation, HPA axis dysregulation. Psychological: cognitive distortions (catastrophizing, overestimation of threat). Treatment: CBT (first-line), exposure therapy, SSRIs/SNRIs, benzodiazepines (short-term).',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000003',
+ 'Elena Villanueva', NOW() - INTERVAL '100 days', NOW() - INTERVAL '105 days'),
+
+-- Social Psychology modules
+('50000000-0000-0000-0000-000000000009',
+ 'Attribution Theory and Social Cognition',
+ '30000000-0000-0000-0000-000000000004', '40000000-0000-0000-0000-000000000031',
+ 'Attribution theory (Heider, Kelley, Weiner) explains how people interpret behavior. Dispositional vs. situational attributions. Fundamental Attribution Error (FAE): overestimating dispositional, underestimating situational factors. Actor-Observer Bias: we attribute others'' behavior to dispositional factors but our own to situational. Self-serving bias: success → internal, failure → external. Kelley''s covariation model: consistency, distinctiveness, consensus.',
+ 'TEXT', 'APPROVED', '[]', 1, '10000000-0000-0000-0000-000000000002',
+ 'Marco Santos', NOW() - INTERVAL '95 days', NOW() - INTERVAL '100 days'),
+
+-- Pending/draft module
+('50000000-0000-0000-0000-000000000010',
+ 'Psychological Assessment Tools: MMPI and Rorschach',
+ '30000000-0000-0000-0000-000000000005', '40000000-0000-0000-0000-000000000043',
+ 'MMPI-2 (Minnesota Multiphasic Personality Inventory-2): 567 true/false items, 10 clinical scales (Hypochondriasis, Depression, Hysteria, Psychopathic Deviate, Masculinity-Femininity, Paranoia, Psychasthenia, Schizophrenia, Mania, Social Introversion) plus validity scales. Rorschach Inkblot Test: projective technique, Exner Comprehensive System, evaluates perception, thought organization, and personality dynamics.',
+ 'TEXT', 'PENDING', '[]', 1, '10000000-0000-0000-0000-000000000003',
+ 'Elena Villanueva', NOW() - INTERVAL '5 days', NOW() - INTERVAL '7 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 8. ASSESSMENTS
+-- questions column: JSON array of {id, text, options[], answer}
+-- answer = the exact text of the correct option (matched case-insensitively by backend)
+-- ────────────────────────────────────────────────────────────
+INSERT INTO assessments (
+    id, title, type, subject_id, topic_id,
+    questions, items, status, author_id, created_at, updated_at
+) VALUES
+
+-- ── General Psychology — Pre-Assessment ──────────────────────
+('60000000-0000-0000-0000-000000000001',
+ 'General Psychology — Pre-Assessment',
+ 'PRE_ASSESSMENT', '30000000-0000-0000-0000-000000000001', NULL,
+ '[
+   {"id":"q001","text":"Who is credited with founding the first experimental psychology laboratory in 1879?",
+    "options":["Sigmund Freud","William James","Wilhelm Wundt","John Watson"],
+    "answer":"Wilhelm Wundt"},
+   {"id":"q002","text":"Which approach emphasizes the role of unconscious processes and early childhood experiences?",
+    "options":["Behaviorism","Psychoanalysis","Humanism","Structuralism"],
+    "answer":"Psychoanalysis"},
+   {"id":"q003","text":"The biopsychosocial model considers which three dimensions?",
+    "options":["Biological, psychological, social","Physical, mental, spiritual","Genetic, behavioral, cultural","Neural, cognitive, emotional"],
+    "answer":"Biological, psychological, social"},
+   {"id":"q004","text":"A researcher manipulates the IV and measures the DV. What type of study is this?",
+    "options":["Correlational","Naturalistic observation","Experiment","Case study"],
+    "answer":"Experiment"},
+   {"id":"q005","text":"Which neurotransmitter is primarily associated with reward and motivation?",
+    "options":["Serotonin","GABA","Dopamine","Acetylcholine"],
+    "answer":"Dopamine"}
+ ]',
+ 5, 'APPROVED', '10000000-0000-0000-0000-000000000002',
+ NOW() - INTERVAL '138 days', NOW() - INTERVAL '138 days'),
+
+-- ── General Psychology — Quiz (Neurons) ──────────────────────
+('60000000-0000-0000-0000-000000000002',
+ 'Neurons and Neural Communication — Quiz',
+ 'QUIZ', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000004',
+ '[
+   {"id":"q010","text":"What is the resting membrane potential of a typical neuron?",
+    "options":["-70 mV","+70 mV","-50 mV","0 mV"],
+    "answer":"-70 mV"},
+   {"id":"q011","text":"Which part of the neuron receives incoming signals from other neurons?",
+    "options":["Axon","Axon terminals","Dendrites","Myelin sheath"],
+    "answer":"Dendrites"},
+   {"id":"q012","text":"The myelin sheath functions to:",
+    "options":["Generate neurotransmitters","Increase signal transmission speed","Store memories","Control hormones"],
+    "answer":"Increase signal transmission speed"},
+   {"id":"q013","text":"Which neurotransmitter is the brain''s primary inhibitory neurotransmitter?",
+    "options":["Glutamate","Dopamine","GABA","Norepinephrine"],
+    "answer":"GABA"},
+   {"id":"q014","text":"The gap between two neurons is called:",
+    "options":["Axon hillock","Synapse","Node of Ranvier","Soma"],
+    "answer":"Synapse"},
+   {"id":"q015","text":"Which type of neuron carries signals FROM the CNS to muscles?",
+    "options":["Sensory neuron","Interneuron","Motor neuron","Mirror neuron"],
+    "answer":"Motor neuron"}
+ ]',
+ 6, 'APPROVED', '10000000-0000-0000-0000-000000000002',
+ NOW() - INTERVAL '128 days', NOW() - INTERVAL '128 days'),
+
+-- ── General Psychology — Post-Assessment ─────────────────────
+('60000000-0000-0000-0000-000000000003',
+ 'General Psychology — Post-Assessment',
+ 'POST_ASSESSMENT', '30000000-0000-0000-0000-000000000001', NULL,
+ '[
+   {"id":"q020","text":"Which brain lobe is primarily responsible for language production (Broca''s area)?",
+    "options":["Occipital","Parietal","Temporal","Frontal"],
+    "answer":"Frontal"},
+   {"id":"q021","text":"Classical conditioning was developed by:",
+    "options":["B.F. Skinner","John Watson","Ivan Pavlov","Albert Bandura"],
+    "answer":"Ivan Pavlov"},
+   {"id":"q022","text":"The hippocampus is critical for:",
+    "options":["Visual processing","Emotional regulation","Memory formation","Motor coordination"],
+    "answer":"Memory formation"},
+   {"id":"q023","text":"Negative reinforcement involves:",
+    "options":["Adding an aversive stimulus","Removing an aversive stimulus","Punishing a behavior","Ignoring a behavior"],
+    "answer":"Removing an aversive stimulus"},
+   {"id":"q024","text":"According to Maslow''s hierarchy, which need must be met first?",
+    "options":["Safety","Esteem","Physiological","Love and belonging"],
+    "answer":"Physiological"},
+   {"id":"q025","text":"A self-fulfilling prophecy is an example of which psychological concept?",
+    "options":["Cognitive dissonance","Confirmation bias","Behavioral confirmation","Fundamental attribution error"],
+    "answer":"Behavioral confirmation"},
+   {"id":"q026","text":"Which memory system holds information for 15–30 seconds?",
+    "options":["Long-term memory","Sensory memory","Short-term / working memory","Procedural memory"],
+    "answer":"Short-term / working memory"},
+   {"id":"q027","text":"The James-Lange theory of emotion proposes that:",
+    "options":["Emotions cause physiological responses","Physiological responses cause emotions","Emotions and physiology occur simultaneously","The thalamus generates emotions directly"],
+    "answer":"Physiological responses cause emotions"},
+   {"id":"q028","text":"Circadian rhythms are regulated primarily by the:",
+    "options":["Cerebellum","Amygdala","Suprachiasmatic nucleus","Hippocampus"],
+    "answer":"Suprachiasmatic nucleus"},
+   {"id":"q029","text":"Which research method allows researchers to establish cause-and-effect relationships?",
+    "options":["Survey","Naturalistic observation","Experiment","Case study"],
+    "answer":"Experiment"}
+ ]',
+ 10, 'APPROVED', '10000000-0000-0000-0000-000000000002',
+ NOW() - INTERVAL '120 days', NOW() - INTERVAL '120 days'),
+
+-- ── Developmental Psychology — Pre-Assessment ────────────────
+('60000000-0000-0000-0000-000000000004',
+ 'Developmental Psychology — Pre-Assessment',
+ 'PRE_ASSESSMENT', '30000000-0000-0000-0000-000000000002', NULL,
+ '[
+   {"id":"q040","text":"Piaget''s first stage of cognitive development (0–2 years) is called:",
+    "options":["Preoperational","Sensorimotor","Concrete Operational","Formal Operational"],
+    "answer":"Sensorimotor"},
+   {"id":"q041","text":"Object permanence is achieved during which Piagetian stage?",
+    "options":["Sensorimotor","Preoperational","Concrete Operational","Formal Operational"],
+    "answer":"Sensorimotor"},
+   {"id":"q042","text":"Vygotsky''s zone of proximal development refers to:",
+    "options":["Tasks a child cannot yet do","Tasks a child can do alone","Tasks between what a child can do alone and with guidance","A child''s highest potential"],
+    "answer":"Tasks between what a child can do alone and with guidance"},
+   {"id":"q043","text":"Erikson''s first psychosocial stage is:",
+    "options":["Autonomy vs. Shame","Trust vs. Mistrust","Industry vs. Inferiority","Initiative vs. Guilt"],
+    "answer":"Trust vs. Mistrust"},
+   {"id":"q044","text":"Which theorist proposed the concept of scaffolding?",
+    "options":["Piaget","Erikson","Freud","Vygotsky"],
+    "answer":"Vygotsky"}
+ ]',
+ 5, 'APPROVED', '10000000-0000-0000-0000-000000000002',
+ NOW() - INTERVAL '118 days', NOW() - INTERVAL '118 days'),
+
+-- ── Abnormal Psychology — Pre-Assessment ─────────────────────
+('60000000-0000-0000-0000-000000000005',
+ 'Abnormal Psychology — Pre-Assessment',
+ 'PRE_ASSESSMENT', '30000000-0000-0000-0000-000000000003', NULL,
+ '[
+   {"id":"q050","text":"The DSM-5 was published in which year?",
+    "options":["2000","2007","2013","2018"],
+    "answer":"2013"},
+   {"id":"q051","text":"Which anxiety disorder is characterized by recurrent, unexpected panic attacks?",
+    "options":["Generalized Anxiety Disorder","Social Anxiety Disorder","Panic Disorder","Specific Phobia"],
+    "answer":"Panic Disorder"},
+   {"id":"q052","text":"Cognitive Behavioral Therapy (CBT) targets:",
+    "options":["Unconscious conflicts","Maladaptive thoughts and behaviors","Neurotransmitter imbalances","Early childhood experiences"],
+    "answer":"Maladaptive thoughts and behaviors"},
+   {"id":"q053","text":"Hallucinations and delusions are hallmark symptoms of:",
+    "options":["Major Depressive Disorder","Borderline Personality Disorder","Schizophrenia","Obsessive-Compulsive Disorder"],
+    "answer":"Schizophrenia"},
+   {"id":"q054","text":"First-line pharmacological treatment for most anxiety disorders is:",
+    "options":["Benzodiazepines","Antipsychotics","SSRIs","Mood stabilizers"],
+    "answer":"SSRIs"}
+ ]',
+ 5, 'APPROVED', '10000000-0000-0000-0000-000000000003',
+ NOW() - INTERVAL '108 days', NOW() - INTERVAL '108 days'),
+
+-- ── Abnormal Psychology — Quiz (Anxiety Disorders) ───────────
+('60000000-0000-0000-0000-000000000006',
+ 'Anxiety Disorders — Quiz',
+ 'QUIZ', '30000000-0000-0000-0000-000000000003', '40000000-0000-0000-0000-000000000022',
+ '[
+   {"id":"q060","text":"GAD is characterized by excessive worry lasting at least:",
+    "options":["2 weeks","1 month","6 months","1 year"],
+    "answer":"6 months"},
+   {"id":"q061","text":"The fear of specific objects or situations is classified as:",
+    "options":["GAD","Panic Disorder","Specific Phobia","Agoraphobia"],
+    "answer":"Specific Phobia"},
+   {"id":"q062","text":"Systematic desensitization is a behavioral technique based on:",
+    "options":["Operant conditioning","Classical conditioning","Observational learning","Cognitive restructuring"],
+    "answer":"Classical conditioning"},
+   {"id":"q063","text":"Which brain structure is hyperactive in anxiety disorders?",
+    "options":["Hippocampus","Prefrontal cortex","Amygdala","Thalamus"],
+    "answer":"Amygdala"},
+   {"id":"q064","text":"Social Anxiety Disorder (SAD) involves fear of:",
+    "options":["Open spaces","Social scrutiny and embarrassment","Specific objects","Recurring panic attacks"],
+    "answer":"Social scrutiny and embarrassment"}
+ ]',
+ 5, 'APPROVED', '10000000-0000-0000-0000-000000000003',
+ NOW() - INTERVAL '98 days', NOW() - INTERVAL '98 days'),
+
+-- ── Pending assessment (not yet approved) ────────────────────
+('60000000-0000-0000-0000-000000000007',
+ 'Psychological Assessment — Pre-Assessment',
+ 'PRE_ASSESSMENT', '30000000-0000-0000-0000-000000000005', NULL,
+ '[
+   {"id":"q070","text":"Reliability in psychological testing refers to:",
+    "options":["Whether a test measures what it claims to measure","Consistency of test scores","Cultural fairness","The range of norms available"],
+    "answer":"Consistency of test scores"},
+   {"id":"q071","text":"The MMPI-2 contains how many items?",
+    "options":["373","467","567","640"],
+    "answer":"567"},
+   {"id":"q072","text":"A test''s ability to measure the construct it is intended to measure is called:",
+    "options":["Reliability","Standardization","Validity","Norms"],
+    "answer":"Validity"},
+   {"id":"q073","text":"The Rorschach Inkblot Test is an example of which type of assessment?",
+    "options":["Objective","Projective","Behavioral","Neuropsychological"],
+    "answer":"Projective"},
+   {"id":"q074","text":"Intelligence testing originated with work by:",
+    "options":["Carl Jung","Alfred Binet","David Wechsler","Lewis Terman"],
+    "answer":"Alfred Binet"}
+ ]',
+ 5, 'PENDING', '10000000-0000-0000-0000-000000000003',
+ NOW() - INTERVAL '6 days', NOW() - INTERVAL '6 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 9. ASSESSMENT SUBMISSIONS
+-- Spread across the last 60 days for realistic analytics
+-- ────────────────────────────────────────────────────────────
+
+-- student1 submissions
+INSERT INTO assessment_submissions (id, assessment_id, student_id, score, passed, correct, total, answers, time_taken_s, submitted_at) VALUES
+('70000000-0000-0000-0001-000000000001','60000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000011', 60, FALSE, 3, 5, '[]', 420, NOW() - INTERVAL '58 days'),
+('70000000-0000-0000-0001-000000000002','60000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000011', 83.33, TRUE,  5, 6, '[]', 510, NOW() - INTERVAL '50 days'),
+('70000000-0000-0000-0001-000000000003','60000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000011', 90, TRUE,  9, 10, '[]', 720, NOW() - INTERVAL '40 days'),
+('70000000-0000-0000-0001-000000000004','60000000-0000-0000-0000-000000000004','10000000-0000-0000-0000-000000000011', 80, TRUE,  4, 5, '[]', 390, NOW() - INTERVAL '35 days'),
+('70000000-0000-0000-0001-000000000005','60000000-0000-0000-0000-000000000005','10000000-0000-0000-0000-000000000011', 60, FALSE, 3, 5, '[]', 360, NOW() - INTERVAL '28 days'),
+('70000000-0000-0000-0001-000000000006','60000000-0000-0000-0000-000000000006','10000000-0000-0000-0000-000000000011', 80, TRUE,  4, 5, '[]', 450, NOW() - INTERVAL '15 days'),
+
+-- student2 submissions
+('70000000-0000-0000-0002-000000000001','60000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000012', 80, TRUE,  4, 5, '[]', 390, NOW() - INTERVAL '55 days'),
+('70000000-0000-0000-0002-000000000002','60000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000012', 66.67, FALSE, 4, 6, '[]', 480, NOW() - INTERVAL '48 days'),
+('70000000-0000-0000-0002-000000000003','60000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000012', 80, TRUE,  8, 10, '[]', 690, NOW() - INTERVAL '38 days'),
+('70000000-0000-0000-0002-000000000004','60000000-0000-0000-0000-000000000004','10000000-0000-0000-0000-000000000012', 100, TRUE, 5, 5, '[]', 300, NOW() - INTERVAL '30 days'),
+('70000000-0000-0000-0002-000000000005','60000000-0000-0000-0000-000000000005','10000000-0000-0000-0000-000000000012', 80, TRUE,  4, 5, '[]', 420, NOW() - INTERVAL '20 days'),
+
+-- student3 submissions
+('70000000-0000-0000-0003-000000000001','60000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000013', 40, FALSE, 2, 5, '[]', 480, NOW() - INTERVAL '52 days'),
+('70000000-0000-0000-0003-000000000002','60000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000013', 50, FALSE, 3, 6, '[]', 600, NOW() - INTERVAL '44 days'),
+('70000000-0000-0000-0003-000000000003','60000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000013', 70, FALSE, 7, 10, '[]', 750, NOW() - INTERVAL '36 days'),
+('70000000-0000-0000-0003-000000000004','60000000-0000-0000-0000-000000000004','10000000-0000-0000-0000-000000000013', 60, FALSE, 3, 5, '[]', 420, NOW() - INTERVAL '25 days'),
+
+-- student4 submissions
+('70000000-0000-0000-0004-000000000001','60000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000014', 100, TRUE, 5, 5, '[]', 350, NOW() - INTERVAL '50 days'),
+('70000000-0000-0000-0004-000000000002','60000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000014', 100, TRUE, 6, 6, '[]', 440, NOW() - INTERVAL '42 days'),
+('70000000-0000-0000-0004-000000000003','60000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000014', 100, TRUE, 10, 10, '[]', 660, NOW() - INTERVAL '34 days'),
+('70000000-0000-0000-0004-000000000004','60000000-0000-0000-0000-000000000004','10000000-0000-0000-0000-000000000014', 80, TRUE,  4, 5, '[]', 370, NOW() - INTERVAL '22 days'),
+('70000000-0000-0000-0004-000000000005','60000000-0000-0000-0000-000000000005','10000000-0000-0000-0000-000000000014', 100, TRUE, 5, 5, '[]', 330, NOW() - INTERVAL '10 days'),
+('70000000-0000-0000-0004-000000000006','60000000-0000-0000-0000-000000000006','10000000-0000-0000-0000-000000000014', 100, TRUE, 5, 5, '[]', 350, NOW() - INTERVAL '3 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 10. STUDENT PROGRESS  (content read completions)
+-- ────────────────────────────────────────────────────────────
+INSERT INTO student_progress (id, student_id, content_id, completed_at) VALUES
+-- student1
+('80000000-0000-0000-0001-000000000001','10000000-0000-0000-0000-000000000011','50000000-0000-0000-0000-000000000001', NOW() - INTERVAL '56 days'),
+('80000000-0000-0000-0001-000000000002','10000000-0000-0000-0000-000000000011','50000000-0000-0000-0000-000000000002', NOW() - INTERVAL '52 days'),
+('80000000-0000-0000-0001-000000000003','10000000-0000-0000-0000-000000000011','50000000-0000-0000-0000-000000000003', NOW() - INTERVAL '48 days'),
+('80000000-0000-0000-0001-000000000004','10000000-0000-0000-0000-000000000011','50000000-0000-0000-0000-000000000005', NOW() - INTERVAL '33 days'),
+-- student2
+('80000000-0000-0000-0002-000000000001','10000000-0000-0000-0000-000000000012','50000000-0000-0000-0000-000000000001', NOW() - INTERVAL '53 days'),
+('80000000-0000-0000-0002-000000000002','10000000-0000-0000-0000-000000000012','50000000-0000-0000-0000-000000000002', NOW() - INTERVAL '50 days'),
+('80000000-0000-0000-0002-000000000003','10000000-0000-0000-0000-000000000012','50000000-0000-0000-0000-000000000003', NOW() - INTERVAL '45 days'),
+('80000000-0000-0000-0002-000000000004','10000000-0000-0000-0000-000000000012','50000000-0000-0000-0000-000000000004', NOW() - INTERVAL '40 days'),
+('80000000-0000-0000-0002-000000000005','10000000-0000-0000-0000-000000000012','50000000-0000-0000-0000-000000000005', NOW() - INTERVAL '28 days'),
+('80000000-0000-0000-0002-000000000006','10000000-0000-0000-0000-000000000012','50000000-0000-0000-0000-000000000007', NOW() - INTERVAL '18 days'),
+-- student3
+('80000000-0000-0000-0003-000000000001','10000000-0000-0000-0000-000000000013','50000000-0000-0000-0000-000000000001', NOW() - INTERVAL '50 days'),
+('80000000-0000-0000-0003-000000000002','10000000-0000-0000-0000-000000000013','50000000-0000-0000-0000-000000000003', NOW() - INTERVAL '42 days'),
+-- student4
+('80000000-0000-0000-0004-000000000001','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000001', NOW() - INTERVAL '48 days'),
+('80000000-0000-0000-0004-000000000002','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000002', NOW() - INTERVAL '45 days'),
+('80000000-0000-0000-0004-000000000003','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000003', NOW() - INTERVAL '40 days'),
+('80000000-0000-0000-0004-000000000004','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000004', NOW() - INTERVAL '35 days'),
+('80000000-0000-0000-0004-000000000005','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000005', NOW() - INTERVAL '30 days'),
+('80000000-0000-0000-0004-000000000006','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000006', NOW() - INTERVAL '20 days'),
+('80000000-0000-0000-0004-000000000007','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000007', NOW() - INTERVAL '8 days'),
+('80000000-0000-0000-0004-000000000008','10000000-0000-0000-0000-000000000014','50000000-0000-0000-0000-000000000008', NOW() - INTERVAL '2 days')
+ON CONFLICT (student_id, content_id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 11. ENROLLMENTS
+-- ────────────────────────────────────────────────────────────
+INSERT INTO enrollments (id, student_id, subject_id, status, enrolled_at) VALUES
+-- student1 enrolled in 3 subjects
+('90000000-0000-0000-0001-000000000001','10000000-0000-0000-0000-000000000011','30000000-0000-0000-0000-000000000001','ACTIVE', NOW() - INTERVAL '88 days'),
+('90000000-0000-0000-0001-000000000002','10000000-0000-0000-0000-000000000011','30000000-0000-0000-0000-000000000002','ACTIVE', NOW() - INTERVAL '88 days'),
+('90000000-0000-0000-0001-000000000003','10000000-0000-0000-0000-000000000011','30000000-0000-0000-0000-000000000003','ACTIVE', NOW() - INTERVAL '88 days'),
+-- student2 enrolled in all 5 approved subjects
+('90000000-0000-0000-0002-000000000001','10000000-0000-0000-0000-000000000012','30000000-0000-0000-0000-000000000001','ACTIVE', NOW() - INTERVAL '83 days'),
+('90000000-0000-0000-0002-000000000002','10000000-0000-0000-0000-000000000012','30000000-0000-0000-0000-000000000002','ACTIVE', NOW() - INTERVAL '83 days'),
+('90000000-0000-0000-0002-000000000003','10000000-0000-0000-0000-000000000012','30000000-0000-0000-0000-000000000003','ACTIVE', NOW() - INTERVAL '83 days'),
+('90000000-0000-0000-0002-000000000004','10000000-0000-0000-0000-000000000012','30000000-0000-0000-0000-000000000004','ACTIVE', NOW() - INTERVAL '83 days'),
+('90000000-0000-0000-0002-000000000005','10000000-0000-0000-0000-000000000012','30000000-0000-0000-0000-000000000005','ACTIVE', NOW() - INTERVAL '83 days'),
+-- student3 enrolled in 2 subjects
+('90000000-0000-0000-0003-000000000001','10000000-0000-0000-0000-000000000013','30000000-0000-0000-0000-000000000001','ACTIVE', NOW() - INTERVAL '78 days'),
+('90000000-0000-0000-0003-000000000002','10000000-0000-0000-0000-000000000013','30000000-0000-0000-0000-000000000003','ACTIVE', NOW() - INTERVAL '78 days'),
+-- student4 enrolled in all 5 approved subjects
+('90000000-0000-0000-0004-000000000001','10000000-0000-0000-0000-000000000014','30000000-0000-0000-0000-000000000001','ACTIVE', NOW() - INTERVAL '73 days'),
+('90000000-0000-0000-0004-000000000002','10000000-0000-0000-0000-000000000014','30000000-0000-0000-0000-000000000002','ACTIVE', NOW() - INTERVAL '73 days'),
+('90000000-0000-0000-0004-000000000003','10000000-0000-0000-0000-000000000014','30000000-0000-0000-0000-000000000003','ACTIVE', NOW() - INTERVAL '73 days'),
+('90000000-0000-0000-0004-000000000004','10000000-0000-0000-0000-000000000014','30000000-0000-0000-0000-000000000004','ACTIVE', NOW() - INTERVAL '73 days'),
+('90000000-0000-0000-0004-000000000005','10000000-0000-0000-0000-000000000014','30000000-0000-0000-0000-000000000005','ACTIVE', NOW() - INTERVAL '73 days')
+ON CONFLICT (student_id, subject_id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 12. ACTIVITY LOGS
+-- ────────────────────────────────────────────────────────────
+INSERT INTO activity_logs (id, user_id, action, target, target_id, ip_address, created_at) VALUES
+('a0000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001','User logged in','admin@ppri.edu','10000000-0000-0000-0000-000000000001','127.0.0.1', NOW() - INTERVAL '2 days'),
+('a0000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000001','Updated system settings',NULL,NULL,'127.0.0.1', NOW() - INTERVAL '2 days'),
+('a0000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000002','User logged in','faculty1@ppri.edu','10000000-0000-0000-0000-000000000002','127.0.0.1', NOW() - INTERVAL '5 days'),
+('a0000000-0000-0000-0000-000000000004','10000000-0000-0000-0000-000000000002','Created content module','Introduction to Psychology: A Brief History','50000000-0000-0000-0000-000000000001','127.0.0.1', NOW() - INTERVAL '145 days'),
+('a0000000-0000-0000-0000-000000000005','10000000-0000-0000-0000-000000000002','Created assessment','General Psychology — Pre-Assessment','60000000-0000-0000-0000-000000000001','127.0.0.1', NOW() - INTERVAL '138 days'),
+('a0000000-0000-0000-0000-000000000006','10000000-0000-0000-0000-000000000001','Assessment approved','General Psychology — Pre-Assessment','60000000-0000-0000-0000-000000000001','127.0.0.1', NOW() - INTERVAL '137 days'),
+('a0000000-0000-0000-0000-000000000007','10000000-0000-0000-0000-000000000011','User logged in','student1@ppri.edu','10000000-0000-0000-0000-000000000011','127.0.0.1', NOW() - INTERVAL '58 days'),
+('a0000000-0000-0000-0000-000000000008','10000000-0000-0000-0000-000000000011','Assessment submitted','General Psychology — Pre-Assessment','60000000-0000-0000-0000-000000000001','127.0.0.1', NOW() - INTERVAL '58 days'),
+('a0000000-0000-0000-0000-000000000009','10000000-0000-0000-0000-000000000014','User logged in','student4@ppri.edu','10000000-0000-0000-0000-000000000014','127.0.0.1', NOW() - INTERVAL '3 days'),
+('a0000000-0000-0000-0000-000000000010','10000000-0000-0000-0000-000000000003','Submitted content for review','Psychological Assessment Tools: MMPI and Rorschach','50000000-0000-0000-0000-000000000010','127.0.0.1', NOW() - INTERVAL '7 days'),
+('a0000000-0000-0000-0000-000000000011','10000000-0000-0000-0000-000000000003','Submitted assessment for review','Psychological Assessment — Pre-Assessment','60000000-0000-0000-0000-000000000007','127.0.0.1', NOW() - INTERVAL '6 days'),
+('a0000000-0000-0000-0000-000000000012','10000000-0000-0000-0000-000000000001','Created subject','General Psychology','30000000-0000-0000-0000-000000000001','127.0.0.1', NOW() - INTERVAL '160 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+-- ────────────────────────────────────────────────────────────
+-- 13. SAMPLE REVISION REQUEST (faculty)
+-- ────────────────────────────────────────────────────────────
+INSERT INTO revisions (id, target_type, target_id, title, details, category, notes, status, created_by, created_at) VALUES
+('b0000000-0000-0000-0000-000000000001',
+ 'MODULE', '50000000-0000-0000-0000-000000000003',
+ 'Update neuron diagrams and add myelination section',
+ 'The content on myelination is brief. Please add a section describing demyelinating diseases (e.g., MS) and their psychological impact.',
+ 'MODULE', '[]', 'PENDING',
+ '10000000-0000-0000-0000-000000000002', NOW() - INTERVAL '10 days')
+ON CONFLICT (id) DO NOTHING;
+
+
+COMMIT;
+
+-- ============================================================
+-- Quick verification query (run manually after seeding)
+-- ============================================================
+-- SELECT 'roles'          AS tbl, COUNT(*) FROM roles
+-- UNION ALL SELECT 'users',           COUNT(*) FROM users
+-- UNION ALL SELECT 'whitelist',        COUNT(*) FROM whitelist
+-- UNION ALL SELECT 'subjects',         COUNT(*) FROM subjects
+-- UNION ALL SELECT 'topics',           COUNT(*) FROM topics
+-- UNION ALL SELECT 'content_modules',  COUNT(*) FROM content_modules
+-- UNION ALL SELECT 'assessments',      COUNT(*) FROM assessments
+-- UNION ALL SELECT 'submissions',      COUNT(*) FROM assessment_submissions
+-- UNION ALL SELECT 'progress',         COUNT(*) FROM student_progress
+-- UNION ALL SELECT 'enrollments',      COUNT(*) FROM enrollments
+-- UNION ALL SELECT 'activity_logs',    COUNT(*) FROM activity_logs;

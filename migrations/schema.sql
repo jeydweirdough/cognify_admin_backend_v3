@@ -1,854 +1,637 @@
--- SCHEMA
+-- ============================================================
+-- schema.sql  —  psych_db (Psychology Review Platform)
+-- PostgreSQL 14+
+-- ============================================================
 
--- ================================================================
--- FULL SCHEMA — DROP, RECREATE, VIEWS
--- Run this file to start completely clean.
--- ================================================================
+-- ────────────────────────────────────────────────────────────
+-- DROP everything (views → tables → functions → triggers)
+-- ────────────────────────────────────────────────────────────
 
+-- Views
+DROP VIEW IF EXISTS v_activity_feed             CASCADE;
+DROP VIEW IF EXISTS v_subject_stats             CASCADE;
+DROP VIEW IF EXISTS v_whitelist_with_user       CASCADE;
+DROP VIEW IF EXISTS v_review_detail             CASCADE;
+DROP VIEW IF EXISTS v_verification_summary      CASCADE;
+DROP VIEW IF EXISTS v_content_with_meta         CASCADE;
+DROP VIEW IF EXISTS v_assessment_with_meta      CASCADE;
+DROP VIEW IF EXISTS v_student_summary           CASCADE;
+DROP VIEW IF EXISTS v_dashboard_overview        CASCADE;
 
--- ================================================================
--- SECTION 1: TEARDOWN
--- Drop views first (they depend on tables), then tables in reverse
--- dependency order, then extensions.
--- ================================================================
+-- Tables (child → parent order)
+DROP TABLE IF EXISTS enrollments                CASCADE;
+DROP TABLE IF EXISTS student_progress           CASCADE;
+DROP TABLE IF EXISTS assessment_submissions     CASCADE;
+DROP TABLE IF EXISTS assessments                CASCADE;
+DROP TABLE IF EXISTS modules                    CASCADE;
+DROP TABLE IF EXISTS questions                  CASCADE;
+DROP TABLE IF EXISTS content_modules            CASCADE;
+DROP TABLE IF EXISTS request_changes            CASCADE;
+DROP TABLE IF EXISTS revisions                  CASCADE;
+DROP TABLE IF EXISTS pending_subject_changes    CASCADE;
+DROP TABLE IF EXISTS topics                     CASCADE;
+DROP TABLE IF EXISTS subjects                   CASCADE;
+DROP TABLE IF EXISTS activity_logs              CASCADE;
+DROP TABLE IF EXISTS system_settings            CASCADE;
+DROP TABLE IF EXISTS whitelist                  CASCADE;
+DROP TABLE IF EXISTS users                      CASCADE;
+DROP TABLE IF EXISTS roles                      CASCADE;
 
-DROP VIEW IF EXISTS v_assessment_detail      CASCADE;
-DROP VIEW IF EXISTS v_assessments_list       CASCADE;
-DROP VIEW IF EXISTS v_subject_overview       CASCADE;
-DROP VIEW IF EXISTS v_subjects_list          CASCADE;
-DROP VIEW IF EXISTS v_review_detail          CASCADE;
-DROP VIEW IF EXISTS v_verification_summary   CASCADE;
-DROP VIEW IF EXISTS v_verification_queue     CASCADE;
-DROP VIEW IF EXISTS v_dashboard_overview     CASCADE;
-DROP VIEW IF EXISTS v_registered_users       CASCADE;
+-- Functions
+DROP FUNCTION IF EXISTS calc_readiness(UUID)    CASCADE;
+DROP FUNCTION IF EXISTS overall_readiness_level(NUMERIC) CASCADE;
+DROP FUNCTION IF EXISTS student_streak(UUID)    CASCADE;
+DROP FUNCTION IF EXISTS pending_approval_count() CASCADE;
+DROP FUNCTION IF EXISTS set_updated_at()        CASCADE;
+DROP FUNCTION IF EXISTS set_last_updated()      CASCADE;
 
-DROP TABLE IF EXISTS assessment_results  CASCADE;
-DROP TABLE IF EXISTS assessment_questions CASCADE;
-DROP TABLE IF EXISTS revision_items      CASCADE;
-DROP TABLE IF EXISTS request_changes     CASCADE;
-DROP TABLE IF EXISTS revisions           CASCADE;
-DROP TABLE IF EXISTS assessments         CASCADE;
-DROP TABLE IF EXISTS questions           CASCADE;
-DROP TABLE IF EXISTS modules             CASCADE;
-DROP TABLE IF EXISTS enrollments         CASCADE;
-DROP TABLE IF EXISTS subjects            CASCADE;
-DROP TABLE IF EXISTS users               CASCADE;
-DROP TABLE IF EXISTS roles               CASCADE;
-DROP TABLE IF EXISTS system_settings     CASCADE;
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";   -- gen_random_uuid()
 
-DROP FUNCTION IF EXISTS update_last_updated_column CASCADE;
-
-
--- ================================================================
--- SECTION 2: EXTENSIONS
--- ================================================================
-
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-
--- ================================================================
--- SECTION 3: TABLES
--- ================================================================
-
--- ----------------
--- ROLES
--- ----------------
-CREATE TABLE roles (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        VARCHAR(50) NOT NULL,       -- 'STUDENT' | 'FACULTY' | 'ADMIN'
-    permissions JSONB,
-    is_system   BOOLEAN DEFAULT FALSE
+-- ────────────────────────────────────────────────────────────
+-- 1. ROLES
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS roles (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        VARCHAR(50) NOT NULL UNIQUE,
+    permissions JSONB       NOT NULL DEFAULT '[]',
+    is_system   BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ----------------
--- USERS
--- ----------------
-CREATE TABLE users (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    first_name   VARCHAR(255),
-    middle_name  VARCHAR(255),
-    last_name    VARCHAR(255),
-    email        VARCHAR(255) UNIQUE,
-    password     VARCHAR(255),                  -- hashed password
-    department   VARCHAR(255),
-    role_id      UUID REFERENCES roles(id),
-    status       VARCHAR(50) DEFAULT 'PENDING', -- PENDING | ACTIVE | DEACTIVATED
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_login   TIMESTAMP                      -- NULL until first login
+-- ────────────────────────────────────────────────────────────
+-- 2. USERS
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    institutional_id VARCHAR(50) NOT NULL,
+    first_name       VARCHAR(100) NOT NULL,
+    middle_name      VARCHAR(100),
+    last_name        VARCHAR(100) NOT NULL,
+    email            VARCHAR(255) NOT NULL UNIQUE,
+    password         VARCHAR(255) NOT NULL,
+    role_id          UUID         NOT NULL REFERENCES roles(id),
+    status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                     CHECK (status IN ('PENDING','ACTIVE','INACTIVE','DEACTIVATED')),
+    department       VARCHAR(150),
+    last_login       TIMESTAMPTZ,
+    date_created     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- ----------------
--- SYSTEM SETTINGS
--- Single-row config table
--- ----------------
-CREATE TABLE system_settings (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    academic_year       VARCHAR(255),
-    institutional_name  VARCHAR(255),
-    maintenance_mode    BOOLEAN DEFAULT FALSE
+CREATE INDEX IF NOT EXISTS idx_users_email    ON users(LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_users_role_id  ON users(role_id);
+CREATE INDEX IF NOT EXISTS idx_users_status   ON users(status);
+
+-- ────────────────────────────────────────────────────────────
+-- 3. WHITELIST
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS whitelist (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    first_name       VARCHAR(100) NOT NULL,
+    middle_name      VARCHAR(100),
+    last_name        VARCHAR(100) NOT NULL,
+    institutional_id VARCHAR(50)  NOT NULL,
+    email            VARCHAR(255) NOT NULL UNIQUE,
+    role             VARCHAR(20)  NOT NULL
+                     CHECK (role IN ('ADMIN','FACULTY','STUDENT')),
+    status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                     CHECK (status IN ('PENDING','REGISTERED')),
+    added_by         UUID         REFERENCES users(id) ON DELETE SET NULL,
+    date_added       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- ----------------
--- SUBJECTS
--- ----------------
-CREATE TABLE subjects (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name         VARCHAR(255),
-    description  TEXT,
-    color        VARCHAR(255),
-    status       VARCHAR(50),               -- DRAFT | PUBLISHED | ARCHIVED
-    weight       INT DEFAULT 0,               -- percentage weight e.g. 20, 40
-    passing_rate INT,
-    author_id    UUID REFERENCES users(id),
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+CREATE INDEX IF NOT EXISTS idx_whitelist_email ON whitelist(LOWER(email));
+
+-- ────────────────────────────────────────────────────────────
+-- 4. SUBJECTS
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS subjects (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        VARCHAR(200) NOT NULL UNIQUE,
+    description TEXT,
+    color       VARCHAR(20)  NOT NULL DEFAULT '#6366f1',
+    status      VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    created_by  UUID         REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- ----------------
--- ENROLLMENTS
--- Tracks which students are enrolled in which subjects
--- ----------------
-CREATE TABLE enrollments (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    student_id    UUID REFERENCES users(id) ON DELETE CASCADE,
-    subject_id    UUID REFERENCES subjects(id) ON DELETE CASCADE,
-    status        VARCHAR(50) DEFAULT 'ACTIVE',
-    date_enrolled TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(student_id, subject_id)
+CREATE INDEX IF NOT EXISTS idx_subjects_status ON subjects(status);
+
+-- ────────────────────────────────────────────────────────────
+-- 5. TOPICS  (hierarchical: topic → subtopic)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS topics (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_id  UUID        NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    parent_id   UUID        REFERENCES topics(id) ON DELETE CASCADE,
+    title       VARCHAR(300) NOT NULL,
+    description TEXT,
+    content     TEXT,
+    sort_order  INT          NOT NULL DEFAULT 0,
+    status      VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    created_by  UUID         REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- ----------------
--- MODULES
--- Belongs to a subject. Supports sub-modules via parent_id.
--- ----------------
-CREATE TABLE modules (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject_id   UUID REFERENCES subjects(id) ON DELETE CASCADE,
-    parent_id    UUID REFERENCES modules(id),
-    author_id    UUID REFERENCES users(id),
-    title        VARCHAR(255),
-    file_name    VARCHAR(255),
-    file_url     VARCHAR(255),
+CREATE INDEX IF NOT EXISTS idx_topics_subject_id ON topics(subject_id);
+CREATE INDEX IF NOT EXISTS idx_topics_parent_id  ON topics(parent_id);
+
+-- ────────────────────────────────────────────────────────────
+-- 6. PENDING SUBJECT CHANGES  (faculty → admin review)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pending_subject_changes (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_id   UUID        NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    change_data  JSONB       NOT NULL DEFAULT '{}',
+    status       VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                 CHECK (status IN ('PENDING','APPROVE','REJECT')),
+    submitted_by UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reviewed_by  UUID        REFERENCES users(id) ON DELETE SET NULL,
+    review_note  TEXT,
+    reviewed_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ────────────────────────────────────────────────────────────
+-- 7. CONTENT MODULES
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS content_modules (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    title            VARCHAR(300) NOT NULL,
+    subject_id       UUID         REFERENCES subjects(id) ON DELETE SET NULL,
+    topic_id         UUID         REFERENCES topics(id)   ON DELETE SET NULL,
+    content          TEXT,
+    format           VARCHAR(20)  NOT NULL DEFAULT 'TEXT'
+                     CHECK (format IN ('TEXT','PDF','VIDEO','LINK','IMAGE')),
+    file_url         TEXT,
+    status           VARCHAR(30)  NOT NULL DEFAULT 'DRAFT'
+                     CHECK (status IN (
+                         'DRAFT','PENDING','APPROVED',
+                         'REVISION_REQUESTED','REJECTED','REMOVAL_PENDING'
+                     )),
+    revision_notes   JSONB        NOT NULL DEFAULT '[]',
+    submission_count INT          NOT NULL DEFAULT 0,
+    author_id        UUID         REFERENCES users(id) ON DELETE SET NULL,
+    author_name      VARCHAR(200),
+    last_updated     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    date_created     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_subject_id ON content_modules(subject_id);
+CREATE INDEX IF NOT EXISTS idx_content_status     ON content_modules(status);
+CREATE INDEX IF NOT EXISTS idx_content_author_id  ON content_modules(author_id);
+
+-- ────────────────────────────────────────────────────────────
+-- 8. ASSESSMENTS
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS assessments (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    title       VARCHAR(300) NOT NULL,
+    type        VARCHAR(30)  NOT NULL
+                CHECK (type IN ('PRE_ASSESSMENT','QUIZ','POST_ASSESSMENT')),
+    subject_id  UUID         REFERENCES subjects(id)  ON DELETE SET NULL,
+    topic_id    UUID         REFERENCES topics(id)    ON DELETE SET NULL,
+    questions   JSONB        NOT NULL DEFAULT '[]',
+    items       INT          NOT NULL DEFAULT 0,
+    status      VARCHAR(30)  NOT NULL DEFAULT 'DRAFT'
+                CHECK (status IN (
+                    'DRAFT','PENDING','APPROVED',
+                    'REJECTED','REVISION_REQUESTED'
+                )),
+    author_id   UUID         REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_assessments_subject_id ON assessments(subject_id);
+CREATE INDEX IF NOT EXISTS idx_assessments_type       ON assessments(type);
+CREATE INDEX IF NOT EXISTS idx_assessments_status     ON assessments(status);
+CREATE INDEX IF NOT EXISTS idx_assessments_author_id  ON assessments(author_id);
+
+-- ────────────────────────────────────────────────────────────
+-- 9. ASSESSMENT SUBMISSIONS
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS assessment_submissions (
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    assessment_id UUID        NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    student_id    UUID        NOT NULL REFERENCES users(id)       ON DELETE CASCADE,
+    score         NUMERIC(6,2) NOT NULL DEFAULT 0,
+    passed        BOOLEAN      NOT NULL DEFAULT FALSE,
+    correct       INT          NOT NULL DEFAULT 0,
+    total         INT          NOT NULL DEFAULT 0,
+    answers       JSONB        NOT NULL DEFAULT '[]',
+    time_taken_s  INT,
+    submitted_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_student_id    ON assessment_submissions(student_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_assessment_id ON assessment_submissions(assessment_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_submitted_at  ON assessment_submissions(submitted_at);
+
+-- ────────────────────────────────────────────────────────────
+-- 10. STUDENT PROGRESS  (content read tracking)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS student_progress (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id   UUID        NOT NULL REFERENCES users(id)          ON DELETE CASCADE,
+    content_id   UUID        NOT NULL REFERENCES content_modules(id) ON DELETE CASCADE,
+    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (student_id, content_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_progress_student_id ON student_progress(student_id);
+
+-- ────────────────────────────────────────────────────────────
+-- 11. REVISIONS
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS revisions (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    target_type VARCHAR(30),
+    target_id   UUID,
+    title       VARCHAR(300),
+    details     TEXT,
+    category    VARCHAR(30),
+    notes       JSONB       NOT NULL DEFAULT '[]',
+    status      VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                CHECK (status IN ('PENDING','RESOLVED')),
+    note        TEXT,
+    author_id   UUID        REFERENCES users(id) ON DELETE SET NULL,
+    created_by  UUID        REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ────────────────────────────────────────────────────────────
+-- 12. REQUEST CHANGES  (verification workflow)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS request_changes (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_id        UUID        REFERENCES users(id) ON DELETE SET NULL,
+    changes_summary  JSONB       NOT NULL DEFAULT '{}',
+    type             VARCHAR(20) NOT NULL CHECK (type IN ('ADD','UPDATE','REMOVE')),
+    category         VARCHAR(20) NOT NULL CHECK (category IN ('SUBJECT','MODULE','ASSESSMENT','QUESTION')),
+    status           VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                     CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    revision_id      UUID        REFERENCES revisions(id) ON DELETE SET NULL,
+    date_created     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_updated     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ────────────────────────────────────────────────────────────
+-- 13. ACTIVITY LOGS
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID        REFERENCES users(id) ON DELETE SET NULL,
+    action      VARCHAR(300) NOT NULL,
+    target      VARCHAR(300),
+    target_id   VARCHAR(100),
+    ip_address  VARCHAR(50),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_user_id    ON activity_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_activity_created_at ON activity_logs(created_at DESC);
+
+-- ────────────────────────────────────────────────────────────
+-- 14. SYSTEM SETTINGS  (single-row config)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS system_settings (
+    id                          INT         PRIMARY KEY DEFAULT 1,
+    maintenance_mode            BOOLEAN     NOT NULL DEFAULT FALSE,
+    maintenance_banner          TEXT,
+    require_content_approval    BOOLEAN     NOT NULL DEFAULT TRUE,
+    allow_public_registration   BOOLEAN     NOT NULL DEFAULT FALSE,
+    institutional_passing_grade INT         NOT NULL DEFAULT 75,
+    institution_name            VARCHAR(300) NOT NULL DEFAULT 'Psychology Review Platform',
+    academic_year               VARCHAR(20)  NOT NULL DEFAULT '2024-2025',
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+
+-- ────────────────────────────────────────────────────────────
+-- 15. QUESTIONS BANK  (legacy / standalone bank)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS questions (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_id      UUID        REFERENCES users(id) ON DELETE SET NULL,
+    text           TEXT        NOT NULL,
+    options        JSONB       NOT NULL DEFAULT '[]',
+    correct_answer INT         NOT NULL DEFAULT 0,
+    date_created   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_updated   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ────────────────────────────────────────────────────────────
+-- 16. MODULES  (file-based modules within subjects)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS modules (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_id   UUID        REFERENCES subjects(id) ON DELETE CASCADE,
+    parent_id    UUID        REFERENCES modules(id)  ON DELETE SET NULL,
+    author_id    UUID        REFERENCES users(id)    ON DELETE SET NULL,
+    title        VARCHAR(300) NOT NULL,
+    file_name    VARCHAR(300),
+    file_url     TEXT,
     content      TEXT,
-    format       VARCHAR(255),
-    status       VARCHAR(50),
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    format       VARCHAR(20)  NOT NULL DEFAULT 'PDF'
+                 CHECK (format IN ('PDF','VIDEO','TEXT','LINK','IMAGE')),
+    status       VARCHAR(20)  NOT NULL DEFAULT 'DRAFT'
+                 CHECK (status IN ('DRAFT','PENDING','APPROVED','ARCHIVED')),
+    date_created TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_updated TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- ----------------
--- QUESTIONS
--- Standalone question bank; linked to assessments via junction table
--- ----------------
-CREATE TABLE questions (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    author_id      UUID REFERENCES users(id),
-    text           TEXT,
-    options        JSONB,                   -- array of answer option strings
-    correct_answer INT,                     -- index into options array
-    date_created   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+CREATE INDEX IF NOT EXISTS idx_modules_subject_id ON modules(subject_id);
+CREATE INDEX IF NOT EXISTS idx_modules_author_id  ON modules(author_id);
+
+-- ────────────────────────────────────────────────────────────
+-- 17. ENROLLMENTS  (student ↔ subject)
+-- ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS enrollments (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id UUID        NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+    subject_id UUID        NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    status     VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+               CHECK (status IN ('ACTIVE','DROPPED','COMPLETED')),
+    enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (student_id, subject_id)
 );
 
--- ----------------
--- ASSESSMENTS
--- type: PRE_ASSESSMENT | POST_ASSESSMENT | QUIZ | EXAM | ACTIVITY
--- items: declared number of questions (may differ from actual count)
--- ----------------
-CREATE TABLE assessments (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject_id   UUID REFERENCES subjects(id),
-    author_id    UUID REFERENCES users(id),
-    title        VARCHAR(255),
-    type         VARCHAR(50),
-    items        INT,
-    time_limit   INT,                       -- in minutes
-    schedule     TIMESTAMP,
-    status       VARCHAR(50),
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Assessment ↔ Question (many-to-many)
-CREATE TABLE assessment_questions (
-    assessment_id UUID REFERENCES assessments(id) ON DELETE CASCADE,
-    question_id   UUID REFERENCES questions(id)   ON DELETE CASCADE,
-    PRIMARY KEY (assessment_id, question_id)
-);
-
--- ----------------
--- ASSESSMENT RESULTS
--- One row per attempt per student
--- ----------------
-CREATE TABLE assessment_results (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    assessment_id  UUID REFERENCES assessments(id),
-    student_id     UUID REFERENCES users(id),
-    score          INT,
-    out_of         INT,
-    attempt_number INT,
-    date_taken     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ----------------
--- REVISIONS
--- A revision is a review record attached to a request_change.
--- author_id = the reviewer who wrote the revision note.
--- ----------------
-CREATE TABLE revisions (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    author_id    UUID REFERENCES users(id),
-    note         TEXT,
-    status       VARCHAR(50),               -- PENDING | APPROVED | REJECTED
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Polymorphic: one revision can reference multiple item types
-CREATE TABLE revision_items (
-    revision_id UUID REFERENCES revisions(id) ON DELETE CASCADE,
-    item_type   VARCHAR(50) NOT NULL,       -- 'assessment' | 'question' | 'module' | 'subject'
-    item_id     UUID NOT NULL,
-    PRIMARY KEY (revision_id, item_type, item_id)
-);
-
--- ----------------
--- REQUEST CHANGES
--- A change request submitted by a faculty/author for admin review.
---
--- changes_summary (JSONB) MUST follow this structure:
---   {
---     "target_id": "<uuid of the item being changed>",
---     "changes": [
---       { "field": "title", "old_value": "...", "new_value": "..." }
---     ]
---   }
---
--- type:     ADD | UPDATE | REMOVE
--- category: SUBJECT | MODULE | ASSESSMENT | QUESTION
---
--- QUESTION category = updating questions on an assessment (treated
--- as an assessment UPDATE in verification views).
--- ----------------
-CREATE TABLE request_changes (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    author_id        UUID REFERENCES users(id),
-    revision_id      UUID REFERENCES revisions(id),
-    changes_summary  JSONB,
-    type             VARCHAR(50),
-    category         VARCHAR(50),
-    status           VARCHAR(50),           -- PENDING | APPROVED | REJECTED
-    date_created     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+CREATE INDEX IF NOT EXISTS idx_enrollments_student_id ON enrollments(student_id);
+CREATE INDEX IF NOT EXISTS idx_enrollments_subject_id ON enrollments(subject_id);
 
 
--- ================================================================
--- SECTION 4: TRIGGER — auto-update last_updated
--- ================================================================
+-- ============================================================
+-- AUTO-UPDATE TRIGGERS
+-- ============================================================
 
-CREATE OR REPLACE FUNCTION update_last_updated_column()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.last_updated = CURRENT_TIMESTAMP;
+    NEW.updated_at = NOW();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
-DO $$
-DECLARE tbl TEXT;
+CREATE OR REPLACE FUNCTION set_last_updated()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    FOR tbl IN
-        SELECT unnest(ARRAY[
-            'users','subjects','modules','questions',
-            'assessments','revisions','request_changes'
-        ])
-    LOOP
-        EXECUTE format(
-            'CREATE TRIGGER %I_last_updated
-             BEFORE UPDATE ON %I
-             FOR EACH ROW EXECUTE FUNCTION update_last_updated_column();',
-            tbl, tbl
-        );
-    END LOOP;
-END$$;
+    NEW.last_updated = NOW();
+    RETURN NEW;
+END;
+$$;
+
+-- Subjects
+DROP TRIGGER IF EXISTS trg_subjects_updated_at ON subjects;
+CREATE TRIGGER trg_subjects_updated_at
+    BEFORE UPDATE ON subjects
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Topics
+DROP TRIGGER IF EXISTS trg_topics_updated_at ON topics;
+CREATE TRIGGER trg_topics_updated_at
+    BEFORE UPDATE ON topics
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Assessments
+DROP TRIGGER IF EXISTS trg_assessments_updated_at ON assessments;
+CREATE TRIGGER trg_assessments_updated_at
+    BEFORE UPDATE ON assessments
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Content modules
+DROP TRIGGER IF EXISTS trg_content_modules_last_updated ON content_modules;
+CREATE TRIGGER trg_content_modules_last_updated
+    BEFORE UPDATE ON content_modules
+    FOR EACH ROW EXECUTE FUNCTION set_last_updated();
+
+-- Modules
+DROP TRIGGER IF EXISTS trg_modules_last_updated ON modules;
+CREATE TRIGGER trg_modules_last_updated
+    BEFORE UPDATE ON modules
+    FOR EACH ROW EXECUTE FUNCTION set_last_updated();
+
+-- Request changes
+DROP TRIGGER IF EXISTS trg_request_changes_last_updated ON request_changes;
+CREATE TRIGGER trg_request_changes_last_updated
+    BEFORE UPDATE ON request_changes
+    FOR EACH ROW EXECUTE FUNCTION set_last_updated();
 
 
--- ================================================================
--- SECTION 5: VIEWS
--- ================================================================
+-- ============================================================
+-- STORED FUNCTIONS
+-- ============================================================
 
--- ----------------------------------------------------------------
--- VIEW: v_dashboard_overview
--- Single-row summary for the main dashboard.
--- Includes: subject/module counts, maintenance flag, enrolled
--- students, pending revisions, user distribution, monthly growth.
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_dashboard_overview AS
-WITH
-subject_stats AS (
-    SELECT COUNT(*) AS total_subjects
-    FROM subjects
-    WHERE status IS DISTINCT FROM 'ARCHIVED'
-),
-module_stats AS (
-    SELECT COUNT(*) AS total_modules
-    FROM modules
-    WHERE status IS DISTINCT FROM 'ARCHIVED'
-),
-maintenance AS (
-    SELECT COALESCE(
-        (SELECT maintenance_mode FROM system_settings LIMIT 1),
-        FALSE
-    ) AS is_maintenance
-),
-enrolled_students AS (
-    SELECT COUNT(DISTINCT e.student_id) AS total_enrolled
-    FROM enrollments e
-    JOIN users u ON u.id = e.student_id
-    JOIN roles r ON u.role_id = r.id
-    WHERE u.status = 'ACTIVE'
-      AND e.status = 'ACTIVE'
-      AND r.name = 'STUDENT'
-),
-pending_revisions AS (
-    SELECT COUNT(*) AS total_pending
-    FROM revisions
-    WHERE status = 'PENDING'
-),
-user_dist AS (
+-- ── calc_readiness(student_id) → readiness record ────────────
+CREATE OR REPLACE FUNCTION calc_readiness(p_student_id UUID)
+RETURNS TABLE (
+    subject_name    TEXT,
+    pre_score       NUMERIC,
+    current_score   NUMERIC,
+    subject_avg     NUMERIC
+) LANGUAGE sql STABLE AS $$
     SELECT
-        COUNT(*) FILTER (WHERE r.name = 'STUDENT') AS total_students,
-        COUNT(*) FILTER (WHERE r.name = 'FACULTY') AS total_faculty,
-        COUNT(*) FILTER (WHERE r.name = 'ADMIN')   AS total_admins,
-        COUNT(*)                                         AS total_users
-    FROM users u
-    LEFT JOIN roles r ON u.role_id = r.id
-    WHERE u.status != 'DEACTIVATED'
-),
-user_growth AS (
-    SELECT JSON_AGG(g ORDER BY (g->>'month')) AS growth
-    FROM (
-        SELECT JSON_BUILD_OBJECT(
-            'month',        TO_CHAR(DATE_TRUNC('month', u.date_created), 'YYYY-MM'),
-            'new_users',    COUNT(*),
-            'new_students', COUNT(*) FILTER (WHERE r.name = 'STUDENT'),
-            'new_faculty',  COUNT(*) FILTER (WHERE r.name = 'FACULTY'),
-            'new_admins',   COUNT(*) FILTER (WHERE r.name = 'ADMIN')
-        ) AS g
-        FROM users u
-        LEFT JOIN roles r ON u.role_id = r.id
-        WHERE u.date_created >= NOW() - INTERVAL '12 months'
-        GROUP BY DATE_TRUNC('month', u.date_created)
-    ) sub
-)
-SELECT
-    ss.total_subjects,
-    ms.total_modules,
-    m.is_maintenance,
-    es.total_enrolled         AS enrolled_students,
-    pr.total_pending          AS pending_revisions,
-    ud.total_students,
-    ud.total_faculty,
-    ud.total_admins,
-    ud.total_users,
-    ug.growth                 AS user_growth_by_month
-FROM subject_stats ss
-CROSS JOIN module_stats ms
-CROSS JOIN maintenance m
-CROSS JOIN enrolled_students es
-CROSS JOIN pending_revisions pr
-CROSS JOIN user_dist ud
-CROSS JOIN user_growth ug;
+        s.name                                              AS subject_name,
+        COALESCE(MAX(CASE WHEN a.type = 'PRE_ASSESSMENT' THEN sub.score END), 0)  AS pre_score,
+        COALESCE(MAX(CASE WHEN a.type = 'POST_ASSESSMENT' THEN sub.score END), 0) AS current_score,
+        COALESCE(AVG(sub.score), 0)                         AS subject_avg
+    FROM assessment_submissions sub
+    JOIN assessments a  ON a.id  = sub.assessment_id
+    JOIN subjects    s  ON s.id  = a.subject_id
+    WHERE sub.student_id = p_student_id
+    GROUP BY s.name;
+$$;
 
 
--- ----------------------------------------------------------------
--- VIEW: v_registered_users
--- All non-pending users with role info and activity summary.
--- For pending/whitelist users: SELECT * FROM users WHERE status = 'PENDING'
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_registered_users AS
+-- ── overall_readiness_level(avg_score) → 'HIGH'/'MODERATE'/'LOW' ──
+CREATE OR REPLACE FUNCTION overall_readiness_level(p_avg NUMERIC)
+RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN p_avg >= 80 THEN 'HIGH'
+        WHEN p_avg >= 65 THEN 'MODERATE'
+        ELSE                  'LOW'
+    END;
+$$;
+
+
+-- ── student_streak(student_id) → consecutive days ────────────
+CREATE OR REPLACE FUNCTION student_streak(p_student_id UUID)
+RETURNS INT LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    streak    INT  := 0;
+    expected  DATE := CURRENT_DATE;
+    rec       RECORD;
+BEGIN
+    FOR rec IN
+        SELECT DISTINCT submitted_at::DATE AS day
+        FROM assessment_submissions
+        WHERE student_id = p_student_id
+        ORDER BY day DESC
+    LOOP
+        IF rec.day = expected THEN
+            streak   := streak + 1;
+            expected := expected - 1;
+        ELSIF rec.day < expected THEN
+            EXIT;
+        END IF;
+    END LOOP;
+    RETURN streak;
+END;
+$$;
+
+
+-- ── pending_approval_count() → total pending items ───────────
+CREATE OR REPLACE FUNCTION pending_approval_count()
+RETURNS INT LANGUAGE sql STABLE AS $$
+    SELECT (
+        (SELECT COUNT(*) FROM content_modules WHERE status IN ('PENDING','REMOVAL_PENDING')) +
+        (SELECT COUNT(*) FROM assessments       WHERE status = 'PENDING') +
+        (SELECT COUNT(*) FROM users             WHERE status = 'PENDING')
+    )::INT;
+$$;
+
+
+-- ============================================================
+-- VIEWS
+-- ============================================================
+
+-- ── v_dashboard_overview  (admin dashboard quick stats) ──────
+CREATE OR REPLACE VIEW v_dashboard_overview AS
 SELECT
-    u.id                                         AS user_id,
-    u.first_name,
-    u.middle_name,
-    u.last_name,
-    CONCAT(u.first_name, ' ', u.last_name)       AS full_name,
+    (SELECT COUNT(*) FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'STUDENT')              AS total_students,
+    (SELECT COUNT(*) FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'FACULTY')              AS total_faculty,
+    (SELECT COUNT(*) FROM subjects)                                                                         AS total_subjects,
+    (SELECT COUNT(*) FROM topics)                                                                           AS total_topics,
+    (SELECT COUNT(*) FROM content_modules)                                                                  AS total_content,
+    (SELECT COUNT(*) FROM content_modules WHERE status IN ('PENDING','REMOVAL_PENDING'))                    AS pending_content,
+    (SELECT COUNT(*) FROM assessments WHERE status = 'PENDING')                                             AS pending_assessments,
+    (SELECT COUNT(*) FROM users WHERE status = 'PENDING')                                                   AS pending_users,
+    (SELECT COALESCE(AVG(score),0) FROM assessment_submissions)                                             AS readiness_avg,
+    pending_approval_count()                                                                                AS total_pending,
+    (SELECT maintenance_mode FROM system_settings LIMIT 1)                                                  AS maintenance_mode;
+
+
+-- ── v_student_summary  (per-student analytics list) ──────────
+CREATE OR REPLACE VIEW v_student_summary AS
+SELECT
+    u.id,
+    u.first_name || ' ' || u.last_name          AS name,
     u.email,
+    u.institutional_id,
     u.department,
     u.status,
-    r.id                                         AS role_id,
-    r.name                                       AS role_name,
-    u.date_created                               AS date_registered,
-    u.last_login,
-    u.last_updated,
-    COUNT(DISTINCT ar.id)                        AS total_assessments_taken,
-    MAX(ar.date_taken)                           AS last_assessment_date
+    COALESCE(AVG(sub.score), 0)                  AS overall_average,
+    COUNT(sub.id)                                AS assessments_taken,
+    overall_readiness_level(COALESCE(AVG(sub.score), 0)) AS readiness_probability
 FROM users u
-LEFT JOIN roles r               ON u.role_id = r.id
-LEFT JOIN assessment_results ar ON ar.student_id = u.id
-WHERE u.status != 'PENDING'
-GROUP BY
-    u.id, u.first_name, u.middle_name, u.last_name,
-    u.email, u.department, u.status,
-    u.date_created, u.last_login, u.last_updated,
-    r.id, r.name;
+JOIN roles r ON u.role_id = r.id
+LEFT JOIN assessment_submissions sub ON sub.student_id = u.id
+WHERE r.name = 'STUDENT'
+GROUP BY u.id, u.first_name, u.last_name, u.email, u.institutional_id, u.department, u.status;
 
 
--- ----------------------------------------------------------------
--- VIEW: v_subjects_list
--- One row per subject with weighted score and passing stats.
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_subjects_list AS
+-- ── v_assessment_with_meta  (assessments + joined names) ──────
+CREATE OR REPLACE VIEW v_assessment_with_meta AS
 SELECT
-    s.id                                         AS subject_id,
+    a.*,
+    s.name                                        AS subject_name,
+    t.title                                       AS topic_title,
+    u.first_name || ' ' || u.last_name            AS author_name
+FROM assessments a
+LEFT JOIN subjects s ON s.id = a.subject_id
+LEFT JOIN topics   t ON t.id = a.topic_id
+LEFT JOIN users    u ON u.id = a.author_id;
+
+
+-- ── v_content_with_meta  (content modules + joined names) ─────
+CREATE OR REPLACE VIEW v_content_with_meta AS
+SELECT
+    cm.*,
+    s.name                                        AS subject_name,
+    t.title                                       AS topic_title,
+    u.first_name || ' ' || u.last_name            AS author_name_resolved
+FROM content_modules cm
+LEFT JOIN subjects s ON s.id = cm.subject_id
+LEFT JOIN topics   t ON t.id = cm.topic_id
+LEFT JOIN users    u ON u.id = cm.author_id;
+
+
+-- ── v_verification_summary  (pending counts per category) ─────
+CREATE OR REPLACE VIEW v_verification_summary AS
+SELECT
+    (SELECT COUNT(*) FROM request_changes WHERE status = 'PENDING')                      AS total_pending,
+    (SELECT COUNT(*) FROM request_changes WHERE status = 'PENDING' AND category = 'SUBJECT')    AS pending_subjects,
+    (SELECT COUNT(*) FROM request_changes WHERE status = 'PENDING' AND category = 'MODULE')     AS pending_modules,
+    (SELECT COUNT(*) FROM request_changes WHERE status = 'PENDING' AND category = 'ASSESSMENT') AS pending_assessments,
+    (SELECT COUNT(*) FROM request_changes WHERE status = 'PENDING' AND category = 'QUESTION')   AS pending_questions;
+
+
+-- ── v_review_detail  (request changes with revision info) ─────
+CREATE OR REPLACE VIEW v_review_detail AS
+SELECT
+    rc.id                                         AS request_id,
+    rc.author_id                                  AS requester_id,
+    u.first_name || ' ' || u.last_name            AS requested_by,
+    rc.type                                       AS change_type,
+    rc.category,
+    rc.status                                     AS request_status,
+    rc.changes_summary,
+    rc.date_created,
+    rc.last_updated,
+    rc.revision_id,
+    rev.status                                    AS revision_status,
+    rev.note                                      AS revision_note,
+    rev.author_id                                 AS reviewer_id
+FROM request_changes rc
+LEFT JOIN users     u   ON rc.author_id   = u.id
+LEFT JOIN revisions rev ON rc.revision_id = rev.id;
+
+
+-- ── v_whitelist_with_user  (whitelist + user account status) ──
+CREATE OR REPLACE VIEW v_whitelist_with_user AS
+SELECT
+    w.*,
+    w.first_name || ' ' || w.last_name            AS full_name,
+    u.id                                          AS user_id,
+    u.status                                      AS user_status
+FROM whitelist w
+LEFT JOIN users u ON LOWER(u.email) = LOWER(w.email);
+
+
+-- ── v_subject_stats  (subjects with topic & content counts) ───
+CREATE OR REPLACE VIEW v_subject_stats AS
+SELECT
+    s.id,
     s.name,
     s.description,
     s.color,
     s.status,
-    s.weight,
-    s.passing_rate,
-    CONCAT(u.first_name, ' ', u.last_name)       AS author_name,
-    s.author_id,
-    s.date_created,
-    s.last_updated,
-    ROUND(
-        AVG(ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100), 2
-    )                                            AS weighted_score,
-    COUNT(*) FILTER (
-        WHERE (ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100) >= s.passing_rate
-    )                                            AS students_passing,
-    COUNT(DISTINCT ar.student_id)                AS students_attempted
+    s.created_at,
+    s.updated_at,
+    u.first_name || ' ' || u.last_name             AS created_by_name,
+    (SELECT COUNT(*) FROM topics          WHERE subject_id = s.id)              AS topic_count,
+    (SELECT COUNT(*) FROM content_modules WHERE subject_id = s.id AND status = 'APPROVED') AS approved_content_count,
+    (SELECT COUNT(*) FROM assessments     WHERE subject_id = s.id AND status = 'APPROVED') AS approved_assessment_count
 FROM subjects s
-LEFT JOIN users u               ON s.author_id = u.id
-LEFT JOIN assessments a         ON a.subject_id = s.id
-LEFT JOIN assessment_results ar ON ar.assessment_id = a.id
-GROUP BY
-    s.id, s.name, s.description, s.color, s.status,
-    s.weight, s.passing_rate, s.author_id, s.date_created, s.last_updated,
-    u.first_name, u.last_name;
+LEFT JOIN users u ON u.id = s.created_by;
 
 
--- ----------------------------------------------------------------
--- VIEW: v_subject_overview
--- Full subject detail: info + modules as JSON.
--- Filter: SELECT * FROM v_subject_overview WHERE subject_id = '<uuid>';
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_subject_overview AS
+-- ── v_activity_feed  (recent activity with user names) ────────
+CREATE OR REPLACE VIEW v_activity_feed AS
 SELECT
-    s.id                                         AS subject_id,
-    s.name                                       AS subject_name,
-    s.description,
-    s.color,
-    s.status,
-    s.weight,
-    s.passing_rate,
-    s.author_id,
-    CONCAT(au.first_name, ' ', au.last_name)     AS author_name,
-    s.date_created,
-    s.last_updated,
-    COUNT(DISTINCT a.id)                         AS total_assessments,
-    COUNT(DISTINCT e.student_id)                 AS enrolled_students,
-    ROUND(
-        AVG(ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100), 2
-    )                                            AS average_score_pct,
-    -- All modules (flat list with parent_id for tree reconstruction client-side)
-    (
-        SELECT JSON_AGG(
-            JSON_BUILD_OBJECT(
-                'module_id',    m.id,
-                'title',        m.title,
-                'format',       m.format,
-                'status',       m.status,
-                'file_name',    m.file_name,
-                'file_url',     m.file_url,
-                'parent_id',    m.parent_id,
-                'author_id',    m.author_id,
-                'date_created', m.date_created,
-                'last_updated', m.last_updated
-            ) ORDER BY m.date_created
-        )
-        FROM modules m WHERE m.subject_id = s.id
-    )                                            AS modules,
-    (SELECT COUNT(*) FROM modules m WHERE m.subject_id = s.id AND m.parent_id IS NULL) AS top_level_modules,
-    (SELECT COUNT(*) FROM modules m WHERE m.subject_id = s.id)                         AS total_modules
-FROM subjects s
-LEFT JOIN users au              ON s.author_id = au.id
-LEFT JOIN assessments a         ON a.subject_id = s.id
-LEFT JOIN enrollments e         ON e.subject_id = s.id AND e.status = 'ACTIVE'
-LEFT JOIN assessment_results ar ON ar.assessment_id = a.id
-GROUP BY
-    s.id, s.name, s.description, s.color, s.status,
-    s.weight, s.passing_rate, s.author_id, s.date_created, s.last_updated,
-    au.first_name, au.last_name;
-
-
--- ----------------------------------------------------------------
--- VIEW: v_assessments_list
--- One row per assessment with question count and result stats.
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_assessments_list AS
-SELECT
-    a.id                                         AS assessment_id,
-    a.title,
-    a.type,
-    a.items                                      AS declared_items,
-    COUNT(DISTINCT aq.question_id)               AS actual_question_count,
-    a.time_limit,
-    a.schedule,
-    a.status,
-    a.author_id,
-    CONCAT(u.first_name, ' ', u.last_name)       AS author_name,
-    s.id                                         AS subject_id,
-    s.name                                       AS subject_name,
-    a.date_created,
-    a.last_updated,
-    COUNT(DISTINCT ar.student_id)                AS students_attempted,
-    ROUND(
-        AVG(ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100), 2
-    )                                            AS average_score_pct
-FROM assessments a
-LEFT JOIN subjects s              ON a.subject_id = s.id
-LEFT JOIN users u                 ON a.author_id = u.id
-LEFT JOIN assessment_questions aq ON aq.assessment_id = a.id
-LEFT JOIN assessment_results ar   ON ar.assessment_id = a.id
-GROUP BY
-    a.id, a.title, a.type, a.items, a.time_limit,
-    a.schedule, a.status, a.author_id, a.date_created, a.last_updated,
-    s.id, s.name, u.first_name, u.last_name;
-
-
--- ----------------------------------------------------------------
--- VIEW: v_assessment_detail
--- Full assessment: all fields + questions + per-student results.
--- Filter: SELECT * FROM v_assessment_detail WHERE assessment_id = '<uuid>';
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_assessment_detail AS
-SELECT
-    a.id                                         AS assessment_id,
-    a.title,
-    a.type,
-    a.items                                      AS declared_items,
-    COUNT(DISTINCT aq.question_id)               AS actual_question_count,
-    a.time_limit,
-    a.schedule,
-    a.status,
-    a.author_id,
-    CONCAT(u.first_name, ' ', u.last_name)       AS author_name,
-    s.id                                         AS subject_id,
-    s.name                                       AS subject_name,
-    s.passing_rate                               AS subject_passing_rate,
-    a.date_created,
-    a.last_updated,
-    -- Questions
-    (
-        SELECT JSON_AGG(
-            JSON_BUILD_OBJECT(
-                'question_id',    q.id,
-                'author_id',      q.author_id,
-                'text',           q.text,
-                'options',        q.options,
-                'correct_answer', q.correct_answer,
-                'date_created',   q.date_created,
-                'last_updated',   q.last_updated
-            ) ORDER BY q.date_created
-        )
-        FROM assessment_questions aq2
-        JOIN questions q ON q.id = aq2.question_id
-        WHERE aq2.assessment_id = a.id
-    )                                            AS questions,
-    -- Result stats
-    COUNT(DISTINCT ar.student_id)                AS students_attempted,
-    COUNT(ar.id)                                 AS total_attempts,
-    ROUND(AVG(ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100), 2) AS average_score_pct,
-    ROUND(MAX(ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100), 2) AS highest_score_pct,
-    ROUND(MIN(ar.score::DECIMAL / NULLIF(ar.out_of, 0) * 100), 2) AS lowest_score_pct,
-    -- Per-student latest attempt
-    (
-        SELECT JSON_AGG(
-            JSON_BUILD_OBJECT(
-                'student_id',     latest.student_id,
-                'student_name',   CONCAT(su.first_name, ' ', su.last_name),
-                'score',          latest.score,
-                'out_of',         latest.out_of,
-                'score_pct',      ROUND(latest.score::DECIMAL / NULLIF(latest.out_of, 0) * 100, 2),
-                'attempt_number', latest.attempt_number,
-                'date_taken',     latest.date_taken
-            ) ORDER BY latest.date_taken DESC
-        )
-        FROM (
-            SELECT DISTINCT ON (student_id)
-                id, student_id, score, out_of, attempt_number, date_taken
-            FROM assessment_results
-            WHERE assessment_id = a.id
-            ORDER BY student_id, attempt_number DESC
-        ) latest
-        JOIN users su ON su.id = latest.student_id
-    )                                            AS student_results
-FROM assessments a
-LEFT JOIN subjects s              ON a.subject_id = s.id
-LEFT JOIN users u                 ON a.author_id = u.id
-LEFT JOIN assessment_questions aq ON aq.assessment_id = a.id
-LEFT JOIN assessment_results ar   ON ar.assessment_id = a.id
-GROUP BY
-    a.id, a.title, a.type, a.items, a.time_limit,
-    a.schedule, a.status, a.author_id, a.date_created, a.last_updated,
-    s.id, s.name, s.passing_rate, u.first_name, u.last_name;
-
-
--- ----------------------------------------------------------------
--- VIEW: v_verification_summary
--- Header badge counts for the verification inbox.
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_verification_summary AS
-SELECT
-    COUNT(*) FILTER (WHERE category = 'SUBJECT')    AS pending_subjects,
-    COUNT(*) FILTER (WHERE category = 'MODULE')     AS pending_modules,
-    COUNT(*) FILTER (WHERE category = 'ASSESSMENT') AS pending_assessments,
-    COUNT(*) FILTER (WHERE category = 'QUESTION')   AS pending_question_updates,
-    COUNT(*)                                         AS total_pending
-FROM request_changes
-WHERE status = 'PENDING';
-
-
--- ----------------------------------------------------------------
--- VIEW: v_verification_queue
--- All pending request_changes across all categories.
--- QUESTION rows are surfaced as ASSESSMENT/UPDATE per business logic.
--- Excludes changes_summary (that's for the review detail view).
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_verification_queue AS
-
-SELECT
-    rc.id                                        AS request_id,
-    rc.author_id,
-    CONCAT(u.first_name, ' ', u.last_name)       AS requested_by,
-    rc.type                                      AS change_type,
-    rc.category,
-    rc.status                                    AS request_status,
-    rc.date_created,
-    rc.last_updated,
-    rc.revision_id,
-    rev.status                                   AS revision_status,
-    rev.note                                     AS revision_note,
-    s.id                                         AS item_id,
-    s.name                                       AS item_title,
-    s.status                                     AS item_current_status
-FROM request_changes rc
-LEFT JOIN users u       ON rc.author_id = u.id
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN subjects s    ON s.id = (rc.changes_summary->>'target_id')::UUID
-WHERE rc.category = 'SUBJECT'
-
-UNION ALL
-
-SELECT
-    rc.id,
-    rc.author_id,
-    CONCAT(u.first_name, ' ', u.last_name),
-    rc.type,
-    rc.category,
-    rc.status,
-    rc.date_created,
-    rc.last_updated,
-    rc.revision_id,
-    rev.status,
-    rev.note,
-    mo.id,
-    mo.title,
-    mo.status
-FROM request_changes rc
-LEFT JOIN users u       ON rc.author_id = u.id
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN modules mo    ON mo.id = (rc.changes_summary->>'target_id')::UUID
-WHERE rc.category = 'MODULE'
-
-UNION ALL
-
-SELECT
-    rc.id,
-    rc.author_id,
-    CONCAT(u.first_name, ' ', u.last_name),
-    rc.type,
-    'ASSESSMENT',                                -- category
-    rc.status,
-    rc.date_created,
-    rc.last_updated,
-    rc.revision_id,
-    rev.status,
-    rev.note,
-    a.id,
-    a.title,
-    a.status
-FROM request_changes rc
-LEFT JOIN users u       ON rc.author_id = u.id
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN assessments a ON a.id = (rc.changes_summary->>'target_id')::UUID
-WHERE rc.category = 'ASSESSMENT'
-
-UNION ALL
-
--- QUESTION changes surface as ASSESSMENT / UPDATE
-SELECT
-    rc.id,
-    rc.author_id,
-    CONCAT(u.first_name, ' ', u.last_name),
-    'UPDATE',                                    -- change_type always UPDATE for questions
-    'ASSESSMENT',                                -- surfaced under ASSESSMENT category
-    rc.status,
-    rc.date_created,
-    rc.last_updated,
-    rc.revision_id,
-    rev.status,
-    rev.note,
-    q.id,
-    LEFT(q.text, 120)                            AS item_title,
-    NULL                                         AS item_current_status
-FROM request_changes rc
-LEFT JOIN users u       ON rc.author_id = u.id
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN questions q   ON q.id = (rc.changes_summary->>'target_id')::UUID
-WHERE rc.category = 'QUESTION';
-
-
--- ----------------------------------------------------------------
--- VIEW: v_review_detail
--- Full review panel for a single request_change.
--- Shows current live state of the item, proposed changes, and
--- any revision notes with author info.
--- Filter: SELECT * FROM v_review_detail WHERE request_id = '<uuid>';
--- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW v_review_detail AS
-
--- ASSESSMENT (includes questions)
-SELECT
-    rc.id                                        AS request_id,
-    rc.category,
-    rc.type                                      AS change_type,
-    rc.status                                    AS request_status,
-    rc.author_id                                 AS requester_id,
-    CONCAT(ru.first_name, ' ', ru.last_name)     AS requester_name,
-    rc.date_created                              AS request_date,
-    rc.changes_summary                           AS proposed_changes,
-    -- Current live state
-    a.id                                         AS current_item_id,
-    a.title                                      AS current_title,
-    a.type                                       AS current_type,
-    a.items                                      AS current_items,
-    a.time_limit                                 AS current_time_limit,
-    a.schedule                                   AS current_schedule,
-    a.status                                     AS current_status,
-    a.date_created                               AS current_date_created,
-    a.last_updated                               AS current_last_updated,
-    -- Current questions
-    (
-        SELECT JSON_AGG(JSON_BUILD_OBJECT(
-            'question_id',    q.id,
-            'text',           q.text,
-            'options',        q.options,
-            'correct_answer', q.correct_answer
-        ))
-        FROM assessment_questions aq
-        JOIN questions q ON q.id = aq.question_id
-        WHERE aq.assessment_id = a.id
-    )                                            AS current_content,
-    -- Revision
-    rev.id                                       AS revision_id,
-    rev.status                                   AS revision_status,
-    rev.note                                     AS revision_note,
-    rev.date_created                             AS revision_date,
-    rev.author_id                                AS revision_author_id,
-    CONCAT(rau.first_name, ' ', rau.last_name)   AS revision_author_name,
-    (
-        SELECT JSON_AGG(JSON_BUILD_OBJECT('item_type', ri.item_type, 'item_id', ri.item_id))
-        FROM revision_items ri WHERE ri.revision_id = rev.id
-    )                                            AS revision_items
-FROM request_changes rc
-LEFT JOIN users ru      ON rc.author_id = ru.id
-LEFT JOIN assessments a ON a.id = (rc.changes_summary->>'target_id')::UUID
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN users rau     ON rev.author_id = rau.id
-WHERE rc.category IN ('ASSESSMENT', 'QUESTION')
-
-UNION ALL
-
--- SUBJECT
-SELECT
-    rc.id, rc.category, rc.type, rc.status,
-    rc.author_id,
-    CONCAT(ru.first_name, ' ', ru.last_name),
-    rc.date_created,
-    rc.changes_summary,
-    s.id, s.name, NULL, NULL, NULL, NULL,
-    s.status, s.date_created, s.last_updated,
-    (
-        SELECT JSON_AGG(JSON_BUILD_OBJECT(
-            'module_id', m.id, 'title', m.title,
-            'format', m.format, 'status', m.status
-        ))
-        FROM modules m WHERE m.subject_id = s.id
-    ),
-    rev.id, rev.status, rev.note, rev.date_created, rev.author_id,
-    CONCAT(rau.first_name, ' ', rau.last_name),
-    (
-        SELECT JSON_AGG(JSON_BUILD_OBJECT('item_type', ri.item_type, 'item_id', ri.item_id))
-        FROM revision_items ri WHERE ri.revision_id = rev.id
-    )
-FROM request_changes rc
-LEFT JOIN users ru      ON rc.author_id = ru.id
-LEFT JOIN subjects s    ON s.id = (rc.changes_summary->>'target_id')::UUID
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN users rau     ON rev.author_id = rau.id
-WHERE rc.category = 'SUBJECT'
-
-UNION ALL
-
--- MODULE
-SELECT
-    rc.id, rc.category, rc.type, rc.status,
-    rc.author_id,
-    CONCAT(ru.first_name, ' ', ru.last_name),
-    rc.date_created,
-    rc.changes_summary,
-    mo.id, mo.title, mo.format, NULL, NULL, NULL,
-    mo.status, mo.date_created, mo.last_updated,
-    (SELECT JSON_BUILD_OBJECT(
-        'content', mo.content, 'file_name', mo.file_name, 'file_url', mo.file_url
-    )),
-    rev.id, rev.status, rev.note, rev.date_created, rev.author_id,
-    CONCAT(rau.first_name, ' ', rau.last_name),
-    (
-        SELECT JSON_AGG(JSON_BUILD_OBJECT('item_type', ri.item_type, 'item_id', ri.item_id))
-        FROM revision_items ri WHERE ri.revision_id = rev.id
-    )
-FROM request_changes rc
-LEFT JOIN users ru      ON rc.author_id = ru.id
-LEFT JOIN modules mo    ON mo.id = (rc.changes_summary->>'target_id')::UUID
-LEFT JOIN revisions rev ON rc.revision_id = rev.id
-LEFT JOIN users rau     ON rev.author_id = rau.id
-WHERE rc.category = 'MODULE';
-
-
--- ================================================================
--- QUICK REFERENCE
--- ================================================================
---
--- VIEWS (use WHERE clause to filter):
---   v_dashboard_overview          → single row, no filter needed
---   v_registered_users            → all active/non-pending users
---   v_subjects_list               → all subjects with scores
---   v_subject_overview            → WHERE subject_id = '<uuid>'
---   v_assessments_list            → all assessments
---   v_assessment_detail           → WHERE assessment_id = '<uuid>'
---   v_verification_summary        → single row badge counts
---   v_verification_queue          → WHERE status = 'PENDING' (optional)
---   v_review_detail               → WHERE request_id = '<uuid>'
---
--- WHITELIST (pending users — no separate view needed):
---   SELECT * FROM users WHERE status = 'PENDING' ORDER BY date_created;
---
--- changes_summary JSONB contract:
---   { "target_id": "<uuid>", "changes": [{ "field": "", "old_value": "", "new_value": "" }] }
---
--- ================================================================
+    al.id,
+    al.action,
+    al.target,
+    al.target_id,
+    al.ip_address,
+    al.created_at,
+    al.user_id,
+    u.first_name || ' ' || u.last_name             AS user_name,
+    r.name                                         AS user_role
+FROM activity_logs al
+LEFT JOIN users u ON u.id = al.user_id
+LEFT JOIN roles r ON r.id = u.role_id;

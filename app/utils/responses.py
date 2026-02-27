@@ -7,6 +7,9 @@ def ok(data=None, message="Success", status=200):
 def created(data=None, message="Created"):
     return ok(data, message, 201)
 
+def no_content():
+    return "", 204
+
 def error(message="An error occurred", status=400, errors=None):
     body = {"success": False, "message": message}
     if errors:
@@ -22,5 +25,11 @@ def unauthorized(message="Unauthorized"):
 def forbidden(message="Forbidden"):
     return error(message, 403)
 
+def conflict(message="Conflict"):
+    return error(message, 409)
+
 def server_error(message="Internal server error"):
     return error(message, 500)
+
+def maintenance():
+    return error("System is under maintenance. Please try again later.", 503)

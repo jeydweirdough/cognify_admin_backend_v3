@@ -1,4 +1,4 @@
-"""db.py - PostgreSQL connection pool and query helpers."""
+"""PostgreSQL connection pool and query helpers."""
 import os
 import psycopg2
 import psycopg2.pool
@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 _pool = None
+
 
 def get_pool():
     global _pool
@@ -22,6 +23,7 @@ def get_pool():
         )
     return _pool
 
+
 @contextmanager
 def get_conn():
     pool = get_pool()
@@ -35,11 +37,13 @@ def get_conn():
     finally:
         pool.putconn(conn)
 
+
 @contextmanager
 def get_cursor():
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             yield cur
+
 
 def fetchone(sql, params=None):
     with get_cursor() as cur:
@@ -47,15 +51,18 @@ def fetchone(sql, params=None):
         row = cur.fetchone()
         return dict(row) if row else None
 
+
 def fetchall(sql, params=None):
     with get_cursor() as cur:
         cur.execute(sql, params)
         return [dict(r) for r in cur.fetchall()]
 
+
 def execute(sql, params=None):
     with get_cursor() as cur:
         cur.execute(sql, params)
         return cur.rowcount
+
 
 def execute_returning(sql, params=None):
     with get_cursor() as cur:
@@ -63,7 +70,9 @@ def execute_returning(sql, params=None):
         row = cur.fetchone()
         return dict(row) if row else None
 
+
 def paginate(sql_body, params, page, per_page):
+    """Run a count query + paginated query. sql_body must NOT include LIMIT/OFFSET."""
     count_sql = f"SELECT COUNT(*) AS total FROM ({sql_body}) AS _sub"
     with get_cursor() as cur:
         cur.execute(count_sql, list(params))
@@ -71,5 +80,10 @@ def paginate(sql_body, params, page, per_page):
         offset = (page - 1) * per_page
         cur.execute(f"{sql_body} LIMIT %s OFFSET %s", list(params) + [per_page, offset])
         items = [dict(r) for r in cur.fetchall()]
-    return {"items": items, "total": total, "page": page, "per_page": per_page,
-            "pages": max(1, -(-total // per_page))}
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": max(1, -(-total // per_page)),
+    }

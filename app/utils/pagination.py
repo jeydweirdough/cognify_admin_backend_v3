@@ -1,4 +1,4 @@
-"""Pagination parameter extraction from request."""
+"""Pagination and search parameter extraction."""
 from flask import request
 
 def get_page_params(default_per_page=20, max_per_page=100):
@@ -12,3 +12,9 @@ def get_page_params(default_per_page=20, max_per_page=100):
 def get_search(field="search"):
     q = request.args.get(field, "").strip()
     return f"%{q}%" if q else None
+
+def get_filter(field, valid_values=None):
+    val = (request.args.get(field) or "").strip().upper()
+    if valid_values and val not in valid_values:
+        return None
+    return val or None
