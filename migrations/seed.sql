@@ -54,51 +54,51 @@ INSERT INTO users (
 -- ── Admin ────────────────────────────────────────────────────
 ('10000000-0000-0000-0000-000000000001',
  'ADMIN-001', 'Ana', 'Cruz', 'Reyes',
- 'admin@ppri.edu',
+ 'admin@cvsu.edu.ph',
  '$2b$12$KIXbhELtNrGF7JK7CzIxiONH5V7M3G0GzGPHMK5JxGmE0s0P2yOZC',
  '00000000-0000-0000-0000-000000000001', 'ACTIVE', 'Administration', NOW() - INTERVAL '180 days'),
 
 -- ── Faculty ──────────────────────────────────────────────────
 ('10000000-0000-0000-0000-000000000002',
  'FAC-2024-001', 'Marco', 'Antonio', 'Santos',
- 'faculty1@ppri.edu',
+ 'faculty1@cvsu.edu.ph',
  '$2b$12$X8RhYvBn7MtK3O4P5qAh8eP2Z3KMQd9hW1aJlH4yNxVRmUxS1sOaC',
  '00000000-0000-0000-0000-000000000002', 'ACTIVE', 'Developmental Psychology', NOW() - INTERVAL '150 days'),
 
 ('10000000-0000-0000-0000-000000000003',
  'FAC-2024-002', 'Elena', 'Grace', 'Villanueva',
- 'faculty2@ppri.edu',
+ 'faculty2@cvsu.edu.ph',
  '$2b$12$X8RhYvBn7MtK3O4P5qAh8eP2Z3KMQd9hW1aJlH4yNxVRmUxS1sOaC',
  '00000000-0000-0000-0000-000000000002', 'ACTIVE', 'Clinical Psychology', NOW() - INTERVAL '120 days'),
 
 -- ── Students ─────────────────────────────────────────────────
 ('10000000-0000-0000-0000-000000000011',
  '2024-PSY-001', 'Jose', 'Miguel', 'Garcia',
- 'student1@ppri.edu',
+ 'student1@cvsu.edu.ph',
  '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
  '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '90 days'),
 
 ('10000000-0000-0000-0000-000000000012',
  '2024-PSY-002', 'Maria', 'Luisa', 'Fernandez',
- 'student2@ppri.edu',
+ 'student2@cvsu.edu.ph',
  '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
  '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '85 days'),
 
 ('10000000-0000-0000-0000-000000000013',
  '2024-PSY-003', 'Ricardo', 'Paulo', 'Mendoza',
- 'student3@ppri.edu',
+ 'student3@cvsu.edu.ph',
  '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
  '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '80 days'),
 
 ('10000000-0000-0000-0000-000000000014',
  '2024-PSY-004', 'Clara', 'Rose', 'Torres',
- 'student4@ppri.edu',
+ 'student4@cvsu.edu.ph',
  '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
  '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology', NOW() - INTERVAL '75 days'),
 
 ('10000000-0000-0000-0000-000000000015',
  '2024-PSY-005', 'Diego', 'Luis', 'Bautista',
- 'student5@ppri.edu',
+ 'student5@cvsu.edu.ph',
  '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
  '00000000-0000-0000-0000-000000000003', 'PENDING', 'BS Psychology', NOW() - INTERVAL '5 days')
 ON CONFLICT (id) DO NOTHING;

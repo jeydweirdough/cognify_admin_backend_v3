@@ -139,27 +139,42 @@ psql -U postgres -c "CREATE DATABASE psych_db;"
 
 ### 6. Run migrations and seed data
 
-```bash
-# Create all tables, views, functions, and triggers
-psql -U postgres -d psych_db -f migrations/schema.sql
+Run the setup script:
 
-# Insert initial roles, users, subjects, assessments, and sample data
-psql -U postgres -d psych_db -f migrations/seed.sql
+```bash
+python setup_db.py
 ```
 
-The `schema.sql` starts with `DROP … CASCADE` statements so it is safe to re-run — it will wipe and recreate everything from scratch.
+You will be prompted to enter a password for all seeded accounts.
+
+This password will be automatically hashed and used for all default users.
+
+Example:
+
+```
+Enter dev password for seeded accounts: dev123
+```
+
+---
+
+The script will:
+
+* Create all tables, views, functions, and triggers
+* Insert seed data
+* Apply your chosen password to all accounts
+
+---
 
 **Default seeded accounts:**
 
-| Role | Email | Password |
-|---|---|---|
-| Admin | admin@ppri.edu | Admin@1234 |
-| Faculty | faculty1@ppri.edu | Faculty@1234 |
-| Faculty | faculty2@ppri.edu | Faculty@1234 |
-| Student | student1@ppri.edu | Student@1234 |
-| Student | student2@ppri.edu | Student@1234 |
+| Role    | Email                                         | Password               |
+| ------- | --------------------------------------------- | ---------------------- |
+| Admin   | [admin@ppri.edu](mailto:admin@ppri.edu)       | (your chosen password) |
+| Faculty | [faculty1@ppri.edu](mailto:faculty1@ppri.edu) | (your chosen password) |
+| Faculty | [faculty2@ppri.edu](mailto:faculty2@ppri.edu) | (your chosen password) |
+| Student | [student1@ppri.edu](mailto:student1@ppri.edu) | (your chosen password) |
+| Student | [student2@ppri.edu](mailto:student2@ppri.edu) | (your chosen password) |
 
----
 
 ### 7. Start the development server
 
