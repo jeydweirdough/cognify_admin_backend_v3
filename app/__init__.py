@@ -1,6 +1,6 @@
 """
-Flask application factory.
-All blueprints are registered here. Blueprints are grouped by surface:
+FastAPI application factory.
+All routers are registered here. Routers are grouped by surface:
   /api/web/*    → Admin + Faculty
   /api/mobile/* → Students
 
@@ -8,122 +8,114 @@ Maintenance guard middleware is applied at this level so mobile
 routes return 503 automatically when maintenance_mode is on.
 """
 import os
-from flask import Flask, jsonify, request, g
-from flask_cors import CORS
+import logging
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from app.middleware.auth import _HTTPException
 
 
-def create_app():
-    app = Flask(__name__)
-    app.config["SECRET_KEY"] = os.getenv("JWT_SECRET", "dev-secret")
-    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
+def create_app() -> FastAPI:
+    app = FastAPI(title="Cognify Admin API")
 
-    # ── CORS ─────────────────────────────────────────────────────────────────
-    CORS(
-        app,
-        origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(","),
-        supports_credentials=True,
+    # ── CORS ──────────────────────────────────────────────────────────────────
+    origins = os.getenv(
+        "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
-    # ── Maintenance guard for mobile surface ─────────────────────────────────
-    @app.before_request
-    def maintenance_guard():
-        """Block all /api/mobile/* requests when maintenance mode is active."""
-        if not request.path.startswith("/api/mobile/"):
-            return
-        # Skip auth endpoints so students can see a clear error message on login
-        if request.path.endswith(("/login", "/register")):
-            return
-        try:
-            from app.db import fetchone
-            row = fetchone("SELECT maintenance_mode FROM system_settings LIMIT 1")
-            if row and row.get("maintenance_mode"):
-                return jsonify({
-                    "success": False,
-                    "message": "System is under maintenance. Please try again later.",
-                }), 503
-        except Exception:
-            pass  # DB unreachable → let request proceed normally
+    # ── Global exception handler for auth errors ──────────────────────────────
+    @app.exception_handler(_HTTPException)
+    async def http_exc_handler(request: Request, exc: _HTTPException):
+        return exc.response
 
-    # ── Register all blueprints ───────────────────────────────────────────────
-    _register_blueprints(app)
+    # ── Maintenance guard for mobile surface ──────────────────────────────────
+    @app.middleware("http")
+    async def maintenance_guard(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/mobile/") and not path.endswith(("/login", "/register")):
+            try:
+                from app.db import fetchone
+                row = fetchone("SELECT maintenance_mode FROM system_settings LIMIT 1")
+                if row and row.get("maintenance_mode"):
+                    return JSONResponse(
+                        {"success": False, "message": "System is under maintenance. Please try again later."},
+                        status_code=503,
+                    )
+            except Exception:
+                pass
+        return await call_next(request)
+
+    # ── Request/response logging ───────────────────────────────────────────────
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        print(f"\n---> INCOMING: {request.method} {request.url}")
+        response = await call_next(request)
+        print(f"<--- OUTGOING: {request.method} {request.url.path} | Status: {response.status_code}")
+        print("-" * 50)
+        return response
 
     # ── Global error handlers ─────────────────────────────────────────────────
-    @app.errorhandler(404)
-    def not_found(_):
-        return jsonify({"success": False, "message": "Endpoint not found"}), 404
+    @app.exception_handler(404)
+    async def not_found(_request, _exc):
+        return JSONResponse({"success": False, "message": "Endpoint not found"}, status_code=404)
 
-    @app.errorhandler(405)
-    def method_not_allowed(_):
-        return jsonify({"success": False, "message": "Method not allowed"}), 405
+    @app.exception_handler(405)
+    async def method_not_allowed(_request, _exc):
+        return JSONResponse({"success": False, "message": "Method not allowed"}, status_code=405)
 
-    @app.errorhandler(413)
-    def payload_too_large(_):
-        return jsonify({"success": False, "message": "Payload too large (max 16 MB)"}), 413
+    @app.exception_handler(413)
+    async def payload_too_large(_request, _exc):
+        return JSONResponse({"success": False, "message": "Payload too large (max 16 MB)"}, status_code=413)
 
-    @app.errorhandler(500)
-    def internal_error(e):
-        app.logger.error("Unhandled exception: %s", e, exc_info=True)
-        return jsonify({"success": False, "message": "Internal server error"}), 500
+    @app.exception_handler(500)
+    async def internal_error(request: Request, exc: Exception):
+        logging.error("Unhandled exception: %s", exc, exc_info=True)
+        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
 
     # ── Health check ──────────────────────────────────────────────────────────
     @app.get("/health")
     def health():
-        return jsonify({"status": "ok", "service": "psych-api"})
+        return {"status": "ok", "service": "psych-api"}
+
+    # ── Register all routers ──────────────────────────────────────────────────
+    _register_routers(app)
 
     return app
 
 
-def _register_blueprints(app: Flask):
-    # Auth
-    from app.routes.auth import web_auth_bp, mobile_auth_bp
-    app.register_blueprint(web_auth_bp)
-    app.register_blueprint(mobile_auth_bp)
-
-    # Whitelist
-    from app.routes.whitelist import admin_whitelist_bp, faculty_whitelist_bp
-    app.register_blueprint(admin_whitelist_bp)
-    app.register_blueprint(faculty_whitelist_bp)
-
-    # Users
-    from app.routes.users import admin_users_bp, faculty_users_bp
-    app.register_blueprint(admin_users_bp)
-    app.register_blueprint(faculty_users_bp)
-
-    # Subjects
-    from app.routes.subjects import admin_subjects_bp, faculty_subjects_bp, mobile_subjects_bp
-    app.register_blueprint(admin_subjects_bp)
-    app.register_blueprint(faculty_subjects_bp)
-    app.register_blueprint(mobile_subjects_bp)
-
-    # Content
-    from app.routes.content import admin_content_bp, faculty_content_bp, mobile_content_bp
-    app.register_blueprint(admin_content_bp)
-    app.register_blueprint(faculty_content_bp)
-    app.register_blueprint(mobile_content_bp)
-
-    # Assessments
-    from app.routes.assessments import admin_assess_bp, faculty_assess_bp, mobile_assess_bp
-    app.register_blueprint(admin_assess_bp)
-    app.register_blueprint(faculty_assess_bp)
-    app.register_blueprint(mobile_assess_bp)
-
-    # Analytics + Dashboard
-    from app.routes.analytics import admin_dash_bp, faculty_dash_bp, mobile_prog_bp
-    app.register_blueprint(admin_dash_bp)
-    app.register_blueprint(faculty_dash_bp)
-    app.register_blueprint(mobile_prog_bp)
-
-    # Misc (settings, logs, revisions, verification, roles)
-    from app.routes.misc import (
-        settings_bp, admin_logs_bp,
-        admin_rev_bp, faculty_rev_bp,
-        admin_verify_bp, faculty_verify_bp,
-        roles_bp,
+def _register_routers(app: FastAPI):
+    from app.routes.auth       import web_auth_router, mobile_auth_router
+    from app.routes.whitelist  import admin_whitelist_router, faculty_whitelist_router
+    from app.routes.users      import admin_users_router, faculty_users_router
+    from app.routes.subjects   import admin_subjects_router, faculty_subjects_router, mobile_subjects_router
+    from app.routes.content    import admin_content_router, faculty_content_router, mobile_content_router
+    from app.routes.assessments import admin_assess_router, faculty_assess_router, mobile_assess_router
+    from app.routes.analytics  import admin_dash_router, faculty_dash_router, mobile_prog_router
+    from app.routes.misc       import (
+        settings_router, admin_logs_router,
+        admin_rev_router, faculty_rev_router,
+        admin_verify_router, faculty_verify_router,
+        roles_router,
     )
-    app.register_blueprint(settings_bp)
-    app.register_blueprint(admin_logs_bp)
-    app.register_blueprint(admin_rev_bp)
-    app.register_blueprint(faculty_rev_bp)
-    app.register_blueprint(admin_verify_bp)
-    app.register_blueprint(faculty_verify_bp)
-    app.register_blueprint(roles_bp)
+
+    for router in [
+        web_auth_router, mobile_auth_router,
+        admin_whitelist_router, faculty_whitelist_router,
+        admin_users_router, faculty_users_router,
+        admin_subjects_router, faculty_subjects_router, mobile_subjects_router,
+        admin_content_router, faculty_content_router, mobile_content_router,
+        admin_assess_router, faculty_assess_router, mobile_assess_router,
+        admin_dash_router, faculty_dash_router, mobile_prog_router,
+        settings_router, admin_logs_router,
+        admin_rev_router, faculty_rev_router,
+        admin_verify_router, faculty_verify_router,
+        roles_router,
+    ]:
+        app.include_router(router)

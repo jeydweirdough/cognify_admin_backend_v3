@@ -1,50 +1,53 @@
 """
 Miscellaneous web routes:
-  /api/web/admin/settings     → system settings CRUD (admin only)
-  /api/web/admin/logs         → activity logs viewer (admin only)
-  /api/web/admin/revisions    → revision management (admin only)
+  /api/web/admin/settings     → system settings CRUD
+  /api/web/admin/logs         → activity logs viewer
+  /api/web/admin/revisions    → revision management
   /api/web/faculty/revisions  → faculty sees own revisions
-  /api/web/admin/verification → pending approvals queue (admin)
+  /api/web/admin/verification → pending approvals queue
   /api/web/faculty/verification → faculty submission queue
   /api/web/admin/roles        → role & permissions management
 """
 import json
-from flask import Blueprint, request, g
+from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, roles_required
-from app.utils.responses import ok, created, no_content, error, not_found
+from app.middleware.auth import login_required
+from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import require_fields
 from app.utils.log import log_action
 
-settings_bp      = Blueprint("settings",      __name__, url_prefix="/api/web/admin/settings")
-admin_logs_bp    = Blueprint("admin_logs",    __name__, url_prefix="/api/web/admin/logs")
-admin_rev_bp     = Blueprint("admin_rev",     __name__, url_prefix="/api/web/admin/revisions")
-faculty_rev_bp   = Blueprint("faculty_rev",   __name__, url_prefix="/api/web/faculty/revisions")
-admin_verify_bp  = Blueprint("admin_verify",  __name__, url_prefix="/api/web/admin/verification")
-faculty_verify_bp= Blueprint("faculty_verify",__name__, url_prefix="/api/web/faculty/verification")
-roles_bp         = Blueprint("roles",         __name__, url_prefix="/api/web/admin/roles")
+settings_router       = APIRouter(prefix="/api/web/admin/settings",       tags=["settings"])
+admin_logs_router     = APIRouter(prefix="/api/web/admin/logs",            tags=["admin-logs"])
+admin_rev_router      = APIRouter(prefix="/api/web/admin/revisions",       tags=["admin-revisions"])
+faculty_rev_router    = APIRouter(prefix="/api/web/faculty/revisions",     tags=["faculty-revisions"])
+admin_verify_router   = APIRouter(prefix="/api/web/admin/verification",    tags=["admin-verification"])
+faculty_verify_router = APIRouter(prefix="/api/web/faculty/verification",  tags=["faculty-verification"])
+roles_router          = APIRouter(prefix="/api/web/admin/roles",           tags=["roles"])
 
 
 # ═══════════════════════════════════════════════════════════════
 # SYSTEM SETTINGS
 # ═══════════════════════════════════════════════════════════════
 
-@settings_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def get_settings():
+@settings_router.get("")
+async def get_settings(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     row = fetchone("SELECT * FROM system_settings LIMIT 1")
     if row and row.get("updated_at"):
         row["updated_at"] = row["updated_at"].isoformat()
     return ok(row)
 
 
-@settings_bp.put("")
-@login_required
-@roles_required("ADMIN")
-def update_settings():
-    body = request.get_json(silent=True) or {}
+@settings_router.put("")
+async def update_settings(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     existing = fetchone("SELECT * FROM system_settings LIMIT 1")
     if not existing:
         return error("Settings not initialised", 500)
@@ -70,7 +73,7 @@ def update_settings():
             body.get("academicYear",                  existing["academic_year"]),
         ],
     )
-    log_action("Updated system settings")
+    log_action("Updated system settings", user_id=auth.user_id, ip=auth.ip)
     if updated and updated.get("updated_at"):
         updated["updated_at"] = updated["updated_at"].isoformat()
     return ok(updated)
@@ -80,15 +83,16 @@ def update_settings():
 # ACTIVITY LOGS
 # ═══════════════════════════════════════════════════════════════
 
-@admin_logs_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def list_logs():
-    page, per_page = get_page_params()
-    search  = get_search()
-    user_id = (request.args.get("user_id") or "").strip() or None
-    from_dt = (request.args.get("from") or "").strip() or None
-    to_dt   = (request.args.get("to")   or "").strip() or None
+@admin_logs_router.get("")
+async def list_logs(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+
+    page, per_page = get_page_params(request)
+    search  = get_search(request)
+    user_id = (request.query_params.get("user_id") or "").strip() or None
+    from_dt = (request.query_params.get("from") or "").strip() or None
+    to_dt   = (request.query_params.get("to")   or "").strip() or None
 
     sql = ["""
         SELECT al.id, al.action, al.target, al.target_id, al.ip_address, al.created_at,
@@ -118,7 +122,7 @@ def list_logs():
         r["id"] = str(r["id"])
         if r.get("user_id"): r["user_id"] = str(r["user_id"])
         r["timestamp"] = r.pop("created_at").isoformat()
-        r["userName"] = r.pop("user_name", "—")
+        r["userName"]  = r.pop("user_name", "—")
     return ok(result)
 
 
@@ -128,19 +132,19 @@ def list_logs():
 
 def _fmt_rev(r: dict) -> dict:
     r["id"] = str(r["id"])
-    if r.get("target_id"): r["target_id"] = str(r["target_id"])
+    if r.get("target_id"):  r["target_id"]  = str(r["target_id"])
     if r.get("created_by"): r["created_by"] = str(r["created_by"])
-    if r.get("created_at"): r["createdAt"] = r.pop("created_at").isoformat()
+    if r.get("created_at"): r["createdAt"]  = r.pop("created_at").isoformat()
     r["category"] = r.get("target_type")
     return r
 
 
-@admin_rev_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def admin_list_revisions():
-    page, per_page = get_page_params()
-    status = get_filter("status", {"PENDING", "RESOLVED"}) or "PENDING"
+@admin_rev_router.get("")
+async def admin_list_revisions(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    page, per_page = get_page_params(request)
+    status = get_filter(request, "status", {"PENDING", "RESOLVED"}) or "PENDING"
     result = paginate(
         """SELECT r.*, u.first_name || ' ' || u.last_name AS created_by_name
            FROM revisions r LEFT JOIN users u ON u.id = r.created_by
@@ -151,10 +155,10 @@ def admin_list_revisions():
     return ok(result)
 
 
-@admin_rev_bp.get("/<rev_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_get_revision(rev_id):
+@admin_rev_router.get("/{rev_id}")
+async def admin_get_revision(request: Request, rev_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     r = fetchone(
         "SELECT r.*, u.first_name || ' ' || u.last_name AS created_by_name FROM revisions r LEFT JOIN users u ON u.id = r.created_by WHERE r.id = %s",
         [rev_id],
@@ -162,36 +166,38 @@ def admin_get_revision(rev_id):
     return ok(_fmt_rev(r)) if r else not_found()
 
 
-@admin_rev_bp.patch("/<rev_id>/resolve")
-@login_required
-@roles_required("ADMIN")
-def admin_resolve_revision(rev_id):
+@admin_rev_router.patch("/{rev_id}/resolve")
+async def admin_resolve_revision(request: Request, rev_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     r = fetchone("SELECT id, title FROM revisions WHERE id = %s", [rev_id])
-    if not r:
-        return not_found()
+    if not r: return not_found()
     execute("UPDATE revisions SET status = 'RESOLVED' WHERE id = %s", [rev_id])
-    log_action("Revision resolved", r["title"], rev_id)
+    log_action("Revision resolved", r["title"], rev_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": rev_id, "status": "RESOLVED"})
 
 
-@faculty_rev_bp.get("")
-@login_required
-@roles_required("FACULTY")
-def faculty_list_revisions():
-    page, per_page = get_page_params()
+@faculty_rev_router.get("")
+async def faculty_list_revisions(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    page, per_page = get_page_params(request)
     result = paginate(
         "SELECT * FROM revisions WHERE created_by = %s AND status = 'PENDING' ORDER BY created_at DESC",
-        [g.user_id], page, per_page,
+        [auth.user_id], page, per_page,
     )
     result["items"] = [_fmt_rev(r) for r in result["items"]]
     return ok(result)
 
 
-@faculty_rev_bp.post("")
-@login_required
-@roles_required("FACULTY")
-def faculty_create_revision():
-    body = request.get_json(silent=True) or {}
+@faculty_rev_router.post("")
+async def faculty_create_revision(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     missing = require_fields(body, ["target_type", "target_id", "title"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -206,23 +212,23 @@ def faculty_create_revision():
             body.get("details"),
             body["target_type"].upper(),
             json.dumps(body.get("notes", [])),
-            g.user_id,
+            auth.user_id,
         ],
     )
-    log_action("Created revision request", r["title"], str(r["id"]))
+    log_action("Created revision request", r["title"], str(r["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(_fmt_rev(r))
 
 
 # ═══════════════════════════════════════════════════════════════
-# VERIFICATION (pending approval queue)
+# VERIFICATION
 # ═══════════════════════════════════════════════════════════════
 
-@admin_verify_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def admin_verification_list():
-    """Unified list of everything pending admin approval."""
-    item_type = (request.args.get("type") or "all").lower()
+@admin_verify_router.get("")
+async def admin_verification_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+
+    item_type = (request.query_params.get("type") or "all").lower()
     result = {"modules": [], "assessments": [], "subjects": [], "users": []}
 
     if item_type in ("all", "modules"):
@@ -237,7 +243,7 @@ def admin_verification_list():
                ORDER BY cm.last_updated"""
         )
         for r in result["modules"]:
-            r["id"] = str(r["id"])
+            r["id"]   = str(r["id"])
             r["type"] = "Module"
             r["date"] = r["date"].isoformat()
 
@@ -253,7 +259,7 @@ def admin_verification_list():
                ORDER BY a.updated_at"""
         )
         for r in result["assessments"]:
-            r["id"] = str(r["id"])
+            r["id"]   = str(r["id"])
             r["type"] = "Assessment"
             r["date"] = r["date"].isoformat()
 
@@ -264,7 +270,7 @@ def admin_verification_list():
                ORDER BY s.updated_at"""
         )
         for r in result["subjects"]:
-            r["id"] = str(r["id"])
+            r["id"]   = str(r["id"])
             r["type"] = "Subject"
             r["date"] = r["date"].isoformat()
 
@@ -276,69 +282,71 @@ def admin_verification_list():
                WHERE u.status = 'PENDING' ORDER BY u.date_created"""
         )
         for r in result["users"]:
-            r["id"] = str(r["id"])
+            r["id"]   = str(r["id"])
             r["type"] = "User"
             r["date"] = r["date"].isoformat()
 
     return ok(result)
 
 
-@faculty_verify_bp.get("")
-@login_required
-@roles_required("FACULTY")
-def faculty_verification_list():
-    """Faculty sees their own pending submissions."""
+@faculty_verify_router.get("")
+async def faculty_verification_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+
     modules = fetchall(
         """SELECT cm.id, cm.title, cm.status, cm.last_updated AS date, s.name AS subject
            FROM content_modules cm LEFT JOIN subjects s ON s.id = cm.subject_id
            WHERE cm.author_id = %s AND cm.status IN ('PENDING','REVISION_REQUESTED','REMOVAL_PENDING')
            ORDER BY cm.last_updated""",
-        [g.user_id],
+        [auth.user_id],
     )
     assessments = fetchall(
         """SELECT a.id, a.title, a.status, a.updated_at AS date, s.name AS subject
            FROM assessments a LEFT JOIN subjects s ON s.id = a.subject_id
            WHERE a.author_id = %s AND a.status IN ('PENDING','REVISION_REQUESTED')
            ORDER BY a.updated_at""",
-        [g.user_id],
+        [auth.user_id],
     )
     for r in modules + assessments:
-        r["id"] = str(r["id"])
+        r["id"]   = str(r["id"])
         r["date"] = r["date"].isoformat()
     return ok({"modules": modules, "assessments": assessments})
 
 
 # ═══════════════════════════════════════════════════════════════
-# ROLES MANAGEMENT
+# ROLES
 # ═══════════════════════════════════════════════════════════════
 
-@roles_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def list_roles():
+@roles_router.get("")
+async def list_roles(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     rows = fetchall("SELECT id, name, permissions, is_system, created_at FROM roles ORDER BY name")
     for r in rows:
-        r["id"] = str(r["id"])
+        r["id"]         = str(r["id"])
         r["created_at"] = r["created_at"].isoformat()
     return ok(rows)
 
 
-@roles_bp.get("/<role_id>")
-@login_required
-@roles_required("ADMIN")
-def get_role(role_id):
+@roles_router.get("/{role_id}")
+async def get_role(request: Request, role_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     r = fetchone("SELECT * FROM roles WHERE id = %s", [role_id])
-    if not r:
-        return not_found()
+    if not r: return not_found()
     r["id"] = str(r["id"])
     return ok(r)
 
 
-@roles_bp.post("")
-@login_required
-@roles_required("ADMIN")
-def create_role():
-    body = request.get_json(silent=True) or {}
+@roles_router.post("")
+async def create_role(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     missing = require_fields(body, ["name"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -349,20 +357,22 @@ def create_role():
         [body["name"].upper(), json.dumps(body.get("permissions", []))],
     )
     r["id"] = str(r["id"])
-    log_action("Created role", r["name"], str(r["id"]))
+    log_action("Created role", r["name"], str(r["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(r)
 
 
-@roles_bp.put("/<role_id>")
-@login_required
-@roles_required("ADMIN")
-def update_role(role_id):
+@roles_router.put("/{role_id}")
+async def update_role(request: Request, role_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     existing = fetchone("SELECT * FROM roles WHERE id = %s", [role_id])
-    if not existing:
-        return not_found()
+    if not existing: return not_found()
     if existing["is_system"]:
         return error("Cannot modify system roles", 403)
-    body = request.get_json(silent=True) or {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     r = execute_returning(
         "UPDATE roles SET name = %s, permissions = %s WHERE id = %s RETURNING *",
         [body.get("name", existing["name"]).upper(),
@@ -370,21 +380,20 @@ def update_role(role_id):
          role_id],
     )
     r["id"] = str(r["id"])
-    log_action("Updated role", r["name"], role_id)
+    log_action("Updated role", r["name"], role_id, user_id=auth.user_id, ip=auth.ip)
     return ok(r)
 
 
-@roles_bp.delete("/<role_id>")
-@login_required
-@roles_required("ADMIN")
-def delete_role(role_id):
+@roles_router.delete("/{role_id}")
+async def delete_role(request: Request, role_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     r = fetchone("SELECT name, is_system FROM roles WHERE id = %s", [role_id])
-    if not r:
-        return not_found()
+    if not r: return not_found()
     if r["is_system"]:
         return error("Cannot delete system roles", 403)
     if fetchone("SELECT id FROM users WHERE role_id = %s LIMIT 1", [role_id]):
         return error("Cannot delete a role that has users assigned to it", 409)
     execute("DELETE FROM roles WHERE id = %s", [role_id])
-    log_action("Deleted role", r["name"], role_id)
+    log_action("Deleted role", r["name"], role_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()

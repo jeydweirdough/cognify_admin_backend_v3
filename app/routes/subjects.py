@@ -1,37 +1,18 @@
 """
-Subjects (Psychology Core Subjects) routes
-  GET    /api/web/admin/subjects             list
-  POST   /api/web/admin/subjects             create
-  GET    /api/web/admin/subjects/:id         detail + full topic tree
-  PUT    /api/web/admin/subjects/:id         update metadata
-  DELETE /api/web/admin/subjects/:id         delete
-  PATCH  /api/web/admin/subjects/:id/status  approve/reject pending change
-
-Faculty endpoints (read + write, pending approval flow):
-  GET    /api/web/faculty/subjects
-  POST   /api/web/faculty/subjects
-  GET    /api/web/faculty/subjects/:id
-  PUT    /api/web/faculty/subjects/:id        → saves as PENDING change
-  POST   /api/web/faculty/subjects/:id/topics → add topic/subtopic
-
-Mobile read-only:
-  GET    /api/mobile/student/subjects
-  GET    /api/mobile/student/subjects/:id
+Subjects routes - Admin, Faculty, and Mobile (Student)
 """
-from flask import Blueprint, request, g
+from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, roles_required
-from app.utils.responses import ok, created, no_content, error, not_found
+from app.middleware.auth import login_required
+from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import require_fields, clean_str
 from app.utils.log import log_action
 
-admin_subjects_bp   = Blueprint("admin_subjects",   __name__, url_prefix="/api/web/admin/subjects")
-faculty_subjects_bp = Blueprint("faculty_subjects", __name__, url_prefix="/api/web/faculty/subjects")
-mobile_subjects_bp  = Blueprint("mobile_subjects",  __name__, url_prefix="/api/mobile/student/subjects")
+admin_subjects_router   = APIRouter(prefix="/api/web/admin/subjects",         tags=["admin-subjects"])
+faculty_subjects_router = APIRouter(prefix="/api/web/faculty/subjects",       tags=["faculty-subjects"])
+mobile_subjects_router  = APIRouter(prefix="/api/mobile/student/subjects",    tags=["mobile-subjects"])
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_subject_tree(subject_id: str) -> dict | None:
     s = fetchone(
@@ -64,9 +45,9 @@ def _build_topic_tree(subject_id: str, parent_id=None) -> list:
     return result
 
 
-def _list_subjects(status_filter=None):
-    page, per_page = get_page_params()
-    search = get_search()
+def _list_subjects(request: Request, status_filter=None):
+    page, per_page = get_page_params(request)
+    search = get_search(request)
     sql    = ["SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name FROM subjects s LEFT JOIN users u ON u.id = s.created_by WHERE 1=1"]
     params = []
     if search:
@@ -79,7 +60,6 @@ def _list_subjects(status_filter=None):
     result = paginate(" ".join(sql), params, page, per_page)
     for s in result["items"]:
         s["id"] = str(s["id"])
-        # Include topic count
         cnt = fetchone("SELECT COUNT(*) AS c FROM topics WHERE subject_id = %s", [s["id"]])
         s["topic_count"] = cnt["c"] if cnt else 0
     return result
@@ -89,17 +69,17 @@ def _list_subjects(status_filter=None):
 # ADMIN
 # ═══════════════════════════════════════════════════════════════
 
-@admin_subjects_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def admin_list():
-    return ok(_list_subjects())
+@admin_subjects_router.get("")
+async def admin_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return ok(_list_subjects(request))
 
 
-@admin_subjects_bp.get("/pending-changes")
-@login_required
-@roles_required("ADMIN")
-def admin_pending_changes():
+@admin_subjects_router.get("/pending-changes")
+async def admin_pending_changes(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     rows = fetchall(
         """SELECT psc.*, s.name AS subject_name,
                   u.first_name || ' ' || u.last_name AS submitted_by_name
@@ -115,19 +95,22 @@ def admin_pending_changes():
     return ok(rows)
 
 
-@admin_subjects_bp.get("/<subject_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_get(subject_id):
+@admin_subjects_router.get("/{subject_id}")
+async def admin_get(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     s = _get_subject_tree(subject_id)
     return ok(s) if s else not_found()
 
 
-@admin_subjects_bp.post("")
-@login_required
-@roles_required("ADMIN")
-def admin_create():
-    body = request.get_json(silent=True) or {}
+@admin_subjects_router.post("")
+async def admin_create(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     missing = require_fields(body, ["name"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -137,20 +120,22 @@ def admin_create():
         """INSERT INTO subjects (name, description, color, status, created_by)
            VALUES (%s, %s, %s, 'APPROVED', %s) RETURNING *""",
         [clean_str(body["name"]), clean_str(body.get("description")),
-         body.get("color", "#6366f1"), g.user_id],
+         body.get("color", "#6366f1"), auth.user_id],
     )
-    log_action("Created subject", s["name"], str(s["id"]))
+    log_action("Created subject", s["name"], str(s["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(_get_subject_tree(str(s["id"])))
 
 
-@admin_subjects_bp.put("/<subject_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_update(subject_id):
+@admin_subjects_router.put("/{subject_id}")
+async def admin_update(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     s = fetchone("SELECT * FROM subjects WHERE id = %s", [subject_id])
-    if not s:
-        return not_found()
-    body = request.get_json(silent=True) or {}
+    if not s: return not_found()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     updated = execute_returning(
         """UPDATE subjects SET name = %s, description = %s, color = %s
            WHERE id = %s RETURNING *""",
@@ -158,28 +143,29 @@ def admin_update(subject_id):
          clean_str(body.get("description", s.get("description"))),
          body.get("color", s["color"]), subject_id],
     )
-    log_action("Updated subject", updated["name"], subject_id)
+    log_action("Updated subject", updated["name"], subject_id, user_id=auth.user_id, ip=auth.ip)
     return ok(_get_subject_tree(subject_id))
 
 
-@admin_subjects_bp.delete("/<subject_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_delete(subject_id):
+@admin_subjects_router.delete("/{subject_id}")
+async def admin_delete(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     s = fetchone("SELECT name FROM subjects WHERE id = %s", [subject_id])
-    if not s:
-        return not_found()
+    if not s: return not_found()
     execute("DELETE FROM subjects WHERE id = %s", [subject_id])
-    log_action("Deleted subject", s["name"], subject_id)
+    log_action("Deleted subject", s["name"], subject_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()
 
 
-@admin_subjects_bp.patch("/<change_id>/approve-change")
-@login_required
-@roles_required("ADMIN")
-def admin_approve_change(change_id):
-    """Approve or reject a pending subject change."""
-    body = request.get_json(silent=True) or {}
+@admin_subjects_router.patch("/{change_id}/approve-change")
+async def admin_approve_change(request: Request, change_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     action = (body.get("action") or "").upper()
     if action not in ("APPROVE", "REJECT"):
         return error("action must be APPROVE or REJECT")
@@ -194,87 +180,103 @@ def admin_approve_change(change_id):
             "UPDATE subjects SET name = %s, description = %s, color = %s WHERE id = %s",
             [data.get("name"), data.get("description"), data.get("color"), change["subject_id"]],
         )
-        # Apply topic tree if provided
         if data.get("topics"):
             _save_topic_tree(str(change["subject_id"]), data["topics"])
 
     execute(
         "UPDATE pending_subject_changes SET status = %s, reviewed_by = %s, review_note = %s, reviewed_at = NOW() WHERE id = %s",
-        [action, g.user_id, body.get("note"), change_id],
+        [action, auth.user_id, body.get("note"), change_id],
     )
-    log_action(f"Subject change {action.lower()}d", None, change_id)
+    log_action(f"Subject change {action.lower()}d", None, change_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"action": action})
 
 
-# Topics CRUD under admin
-@admin_subjects_bp.post("/<subject_id>/topics")
-@login_required
-@roles_required("ADMIN")
-def admin_add_topic(subject_id):
-    return _add_topic(subject_id, auto_approve=True)
+@admin_subjects_router.post("/{subject_id}/topics")
+async def admin_add_topic(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _add_topic(subject_id, body, auth, auto_approve=True)
 
 
-@admin_subjects_bp.put("/<subject_id>/topics/<topic_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_update_topic(subject_id, topic_id):
-    return _update_topic(topic_id, auto_approve=True)
+@admin_subjects_router.put("/{subject_id}/topics/{topic_id}")
+async def admin_update_topic(request: Request, subject_id: str, topic_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update_topic(topic_id, body, auth, auto_approve=True)
 
 
-@admin_subjects_bp.delete("/<subject_id>/topics/<topic_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_delete_topic(subject_id, topic_id):
+@admin_subjects_router.delete("/{subject_id}/topics/{topic_id}")
+async def admin_delete_topic(request: Request, subject_id: str, topic_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     execute("DELETE FROM topics WHERE id = %s AND subject_id = %s", [topic_id, subject_id])
     return no_content()
 
 
 # ═══════════════════════════════════════════════════════════════
-# FACULTY — write goes through pending change
+# FACULTY
 # ═══════════════════════════════════════════════════════════════
 
-@faculty_subjects_bp.get("")
-@login_required
-@roles_required("FACULTY")
-def faculty_list():
-    return ok(_list_subjects(status_filter="APPROVED"))
+@faculty_subjects_router.get("")
+async def faculty_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    return ok(_list_subjects(request, status_filter="APPROVED"))
 
 
-@faculty_subjects_bp.get("/<subject_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_get(subject_id):
+@faculty_subjects_router.get("/{subject_id}")
+async def faculty_get(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     s = _get_subject_tree(subject_id)
     return ok(s) if s else not_found()
 
 
-@faculty_subjects_bp.post("/<subject_id>/topics")
-@login_required
-@roles_required("FACULTY")
-def faculty_add_topic(subject_id):
-    return _add_topic(subject_id, auto_approve=False)
+@faculty_subjects_router.post("/{subject_id}/topics")
+async def faculty_add_topic(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _add_topic(subject_id, body, auth, auto_approve=False)
 
 
-@faculty_subjects_bp.put("/<subject_id>/topics/<topic_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_update_topic(subject_id, topic_id):
-    return _update_topic(topic_id, auto_approve=False)
+@faculty_subjects_router.put("/{subject_id}/topics/{topic_id}")
+async def faculty_update_topic(request: Request, subject_id: str, topic_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update_topic(topic_id, body, auth, auto_approve=False)
 
 
-@faculty_subjects_bp.post("/<subject_id>/submit-change")
-@login_required
-@roles_required("FACULTY")
-def faculty_submit_change(subject_id):
-    """Faculty submits a full subject snapshot for admin review."""
+@faculty_subjects_router.post("/{subject_id}/submit-change")
+async def faculty_submit_change(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
         return not_found()
-    body = request.get_json(silent=True) or {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     change = execute_returning(
         "INSERT INTO pending_subject_changes (subject_id, change_data, submitted_by) VALUES (%s, %s, %s) RETURNING id",
-        [subject_id, body, g.user_id],
+        [subject_id, body, auth.user_id],
     )
-    log_action("Submitted subject change for review", None, subject_id)
+    log_action("Submitted subject change for review", None, subject_id, user_id=auth.user_id, ip=auth.ip)
     return created({"change_id": str(change["id"])})
 
 
@@ -282,28 +284,26 @@ def faculty_submit_change(subject_id):
 # MOBILE — read-only
 # ═══════════════════════════════════════════════════════════════
 
-@mobile_subjects_bp.get("")
-@login_required
-@roles_required("STUDENT")
-def mobile_list():
-    result = _list_subjects(status_filter="APPROVED")
-    return ok(result)
+@mobile_subjects_router.get("")
+async def mobile_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
+    return ok(_list_subjects(request, status_filter="APPROVED"))
 
 
-@mobile_subjects_bp.get("/<subject_id>")
-@login_required
-@roles_required("STUDENT")
-def mobile_get(subject_id):
+@mobile_subjects_router.get("/{subject_id}")
+async def mobile_get(request: Request, subject_id: str):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
     s = _get_subject_tree(subject_id)
     return ok(s) if s else not_found()
 
 
 # ── Shared topic helpers ───────────────────────────────────────────────────────
 
-def _add_topic(subject_id: str, auto_approve: bool):
+def _add_topic(subject_id: str, body: dict, auth, auto_approve: bool):
     if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
         return not_found("Subject not found")
-    body = request.get_json(silent=True) or {}
     missing = require_fields(body, ["title"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -314,22 +314,21 @@ def _add_topic(subject_id: str, auto_approve: bool):
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
         [subject_id, body.get("parent_id"), clean_str(body["title"]),
          clean_str(body.get("description")), body.get("content"),
-         body.get("sort_order", 0), status, g.user_id],
+         body.get("sort_order", 0), status, auth.user_id],
     )
     topic["id"] = str(topic["id"])
     topic["subTopics"] = []
-    log_action("Added topic", topic["title"], str(topic["id"]))
+    log_action("Added topic", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(topic)
 
 
-def _update_topic(topic_id: str, auto_approve: bool):
+def _update_topic(topic_id: str, body: dict, auth, auto_approve: bool):
     existing = fetchone("SELECT * FROM topics WHERE id = %s", [topic_id])
     if not existing:
         return not_found("Topic not found")
-    body = request.get_json(silent=True) or {}
     status = existing["status"]
     if not auto_approve and status == "APPROVED":
-        status = "PENDING"   # faculty edits go back to pending
+        status = "PENDING"
 
     updated = execute_returning(
         """UPDATE topics SET title = %s, description = %s, content = %s,
@@ -347,7 +346,6 @@ def _update_topic(topic_id: str, auto_approve: bool):
 
 
 def _save_topic_tree(subject_id: str, topics: list, parent_id=None):
-    """Recursively upsert a topic tree (used on change approval)."""
     for t in topics:
         existing = fetchone("SELECT id FROM topics WHERE id = %s", [t.get("id")]) if t.get("id") else None
         if existing:

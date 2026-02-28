@@ -1,29 +1,27 @@
 """
-Auth routes — shared logic, two blueprints:
-  /api/web/auth   → web_auth_bp   (ADMIN + FACULTY only)
-  /api/mobile/auth → mobile_auth_bp (STUDENT only)
-
-Both surfaces share the same DB but enforce role restrictions
-so the wrong client type gets a clear WRONG_APP error.
+Auth routes — shared logic, two routers:
+  /api/web/auth    → web_auth_router   (ADMIN + FACULTY only)
+  /api/mobile/auth → mobile_auth_router (STUDENT only)
 """
 import os
 import bcrypt
-from flask import Blueprint, request, jsonify, make_response, g
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
 from app.db import fetchone, execute, execute_returning
 from app.middleware.auth import (
     login_required, set_auth_cookies, clear_auth_cookies,
-    decode_token, make_access_token, ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH
+    decode_token, make_access_token, ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH,
+    AuthState,
 )
 from app.utils.responses import ok, error, unauthorized, created, not_found
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
 from app.utils.log import log_action
 
-# ── Blueprint pair ────────────────────────────────────────────────────────────
-web_auth_bp    = Blueprint("web_auth",    __name__, url_prefix="/api/web/auth")
-mobile_auth_bp = Blueprint("mobile_auth", __name__, url_prefix="/api/mobile/auth")
+web_auth_router    = APIRouter(prefix="/api/web/auth",    tags=["web-auth"])
+mobile_auth_router = APIRouter(prefix="/api/mobile/auth", tags=["mobile-auth"])
 
 
-# ── Shared helper ─────────────────────────────────────────────────────────────
+# ── Shared helper ──────────────────────────────────────────────────────────────
 
 def _fetch_user_by_email(email: str):
     return fetchone(
@@ -38,10 +36,6 @@ def _fetch_user_by_email(email: str):
 
 
 def _do_login(user, allowed_roles: list[str]):
-    """
-    Validates credentials and role, sets cookies, returns response.
-    allowed_roles: which roles are permitted on this surface.
-    """
     if user["role"] not in allowed_roles:
         wrong = "web application" if user["role"] == "STUDENT" else "mobile app"
         return None, error(
@@ -54,7 +48,6 @@ def _do_login(user, allowed_roles: list[str]):
     if user["status"] == "PENDING":
         return None, unauthorized("Account is pending approval")
 
-    # Maintenance check: block non-admins when maintenance mode is on
     if user["role"] != "ADMIN":
         settings = fetchone("SELECT maintenance_mode FROM system_settings LIMIT 1")
         if settings and settings.get("maintenance_mode"):
@@ -73,19 +66,13 @@ def _build_login_response(user):
         "role":         user["role"],
         "institutional_id": user.get("institutional_id"),
     }
-    resp = make_response(jsonify({"success": True, "message": "Login successful", "data": payload}))
-    set_auth_cookies(resp, str(user["id"]), user["role"])
-    log_action("User logged in", user["email"], str(user["id"]))
-    return resp
+    response = JSONResponse({"success": True, "message": "Login successful", "data": payload})
+    set_auth_cookies(response, str(user["id"]), user["role"])
+    log_action("User logged in", user["email"], str(user["id"]), user_id=str(user["id"]))
+    return response
 
-
-# ── Shared register logic ─────────────────────────────────────────────────────
 
 def _register(body: dict, expected_role: str):
-    """
-    Shared registration logic for students and faculty.
-    expected_role: 'STUDENT' or 'FACULTY'
-    """
     required = ["institutional_id", "first_name", "last_name", "email", "password"]
     missing = require_fields(body, required)
     if missing:
@@ -99,7 +86,6 @@ def _register(body: dict, expected_role: str):
     if pw_err:
         return error(pw_err)
 
-    # Check whitelist
     entry = fetchone(
         """SELECT id, role, status FROM whitelist
            WHERE LOWER(email) = %s AND LOWER(institutional_id) = LOWER(%s)""",
@@ -117,7 +103,6 @@ def _register(body: dict, expected_role: str):
         wrong = "the mobile app" if expected_role == "STUDENT" else "the web application"
         return error(f"This ID is registered as {entry['role']}. Please use {wrong}.", 403)
 
-    # Check email not already taken
     if fetchone("SELECT id FROM users WHERE LOWER(email) = %s", [email]):
         return error("Email is already registered.", 409)
 
@@ -144,7 +129,6 @@ def _register(body: dict, expected_role: str):
         ],
     )
 
-    # Mark whitelist entry as registered
     execute("UPDATE whitelist SET status = 'REGISTERED' WHERE id = %s", [entry["id"]])
     log_action(f"{expected_role} registered", email, str(user["id"]))
 
@@ -158,105 +142,114 @@ def _register(body: dict, expected_role: str):
 # WEB AUTH  —  Admin + Faculty
 # ═══════════════════════════════════════════════════════════════
 
-@web_auth_bp.post("/login")
-def web_login():
-    body = request.get_json(silent=True) or {}
+@web_auth_router.post("/login")
+async def web_login(request: Request):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     if not body.get("email") or not body.get("password"):
         return error("Email and password are required")
 
     user = _fetch_user_by_email(body["email"])
     if not user:
         return unauthorized("Invalid credentials")
-
     if not bcrypt.checkpw(body["password"].encode(), user["password"].encode()):
         return unauthorized("Invalid credentials")
 
     user, err = _do_login(user, ["ADMIN", "FACULTY"])
     if err:
         return err
-
     return _build_login_response(user)
 
 
-@web_auth_bp.post("/register")
-def web_register():
-    """Faculty self-registration (creates PENDING account)."""
-    body = request.get_json(silent=True) or {}
+@web_auth_router.post("/register")
+async def web_register(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     return _register(body, "FACULTY")
 
 
-@web_auth_bp.post("/logout")
-def web_logout():
-    resp = make_response(jsonify({"success": True, "message": "Logged out"}))
-    return clear_auth_cookies(resp)
+@web_auth_router.post("/logout")
+async def web_logout():
+    response = JSONResponse({"success": True, "message": "Logged out"})
+    clear_auth_cookies(response)
+    return response
 
 
-@web_auth_bp.post("/refresh")
-def web_refresh():
-    return _refresh_token()
+@web_auth_router.post("/refresh")
+async def web_refresh(request: Request):
+    return _refresh_token(request)
 
 
-@web_auth_bp.get("/me")
-@login_required
-def web_me():
-    if g.role not in ("ADMIN", "FACULTY"):
+@web_auth_router.get("/me")
+async def web_me(request: Request):
+    auth = login_required(request)
+    if auth.role not in ("ADMIN", "FACULTY"):
         return unauthorized("Use the mobile app to access your account")
-    return _me()
+    return _me(auth)
 
 
 # ═══════════════════════════════════════════════════════════════
 # MOBILE AUTH  —  Students
 # ═══════════════════════════════════════════════════════════════
 
-@mobile_auth_bp.post("/login")
-def mobile_login():
-    body = request.get_json(silent=True) or {}
+@mobile_auth_router.post("/login")
+async def mobile_login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     if not body.get("email") or not body.get("password"):
         return error("Email and password are required")
 
     user = _fetch_user_by_email(body["email"])
     if not user:
         return unauthorized("Invalid credentials")
-
     if not bcrypt.checkpw(body["password"].encode(), user["password"].encode()):
         return unauthorized("Invalid credentials")
 
     user, err = _do_login(user, ["STUDENT"])
     if err:
         return err
-
     return _build_login_response(user)
 
 
-@mobile_auth_bp.post("/register")
-def mobile_register():
-    """Student self-registration (creates PENDING account)."""
-    body = request.get_json(silent=True) or {}
+@mobile_auth_router.post("/register")
+async def mobile_register(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     return _register(body, "STUDENT")
 
 
-@mobile_auth_bp.post("/logout")
-def mobile_logout():
-    resp = make_response(jsonify({"success": True, "message": "Logged out"}))
-    return clear_auth_cookies(resp)
+@mobile_auth_router.post("/logout")
+async def mobile_logout():
+    response = JSONResponse({"success": True, "message": "Logged out"})
+    clear_auth_cookies(response)
+    return response
 
 
-@mobile_auth_bp.post("/refresh")
-def mobile_refresh():
-    return _refresh_token()
+@mobile_auth_router.post("/refresh")
+async def mobile_refresh(request: Request):
+    return _refresh_token(request)
 
 
-@mobile_auth_bp.get("/me")
-@login_required
-def mobile_me():
-    if g.role != "STUDENT":
+@mobile_auth_router.get("/me")
+async def mobile_me(request: Request):
+    auth = login_required(request)
+    if auth.role != "STUDENT":
         return unauthorized("Use the web application to access your account")
-    return _me()
+    return _me(auth)
 
 
-# ── Shared helpers for refresh + me ──────────────────────────────────────────
+# ── Shared helpers ─────────────────────────────────────────────────────────────
 
-def _refresh_token():
+def _refresh_token(request: Request):
     token = request.cookies.get(COOKIE_REFRESH)
     if not token:
         return unauthorized("No refresh token")
@@ -271,22 +264,22 @@ def _refresh_token():
     if not user or user["status"] == "DEACTIVATED":
         return unauthorized("User not found or deactivated")
 
-    prod = os.getenv("FLASK_ENV") == "production"
+    prod = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")) == "production"
     access = make_access_token(str(user["id"]), user["role"])
-    resp = make_response(jsonify({"success": True, "message": "Token refreshed"}))
-    resp.set_cookie(COOKIE_ACCESS, access, httponly=True, secure=prod,
-                    samesite="Lax", max_age=ACCESS_MINUTES * 60)
-    return resp
+    response = JSONResponse({"success": True, "message": "Token refreshed"})
+    response.set_cookie(COOKIE_ACCESS, access, httponly=True, secure=prod,
+                        samesite="lax", max_age=ACCESS_MINUTES * 60)
+    return response
 
 
-def _me():
+def _me(auth: AuthState):
     user = fetchone(
         """SELECT u.id, u.institutional_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
                   r.id AS role_id, r.name AS role_name, r.permissions
            FROM users u JOIN roles r ON u.role_id = r.id
            WHERE u.id = %s""",
-        [g.user_id],
+        [auth.user_id],
     )
     if not user:
         return unauthorized("User not found")

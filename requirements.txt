@@ -1,8 +1,7 @@
-flask
-flask-cors
+fastapi
+uvicorn[standard]
 psycopg2-binary
 python-dotenv
 bcrypt
 PyJWT
-marshmallow
-gunicorn
+python-multipart

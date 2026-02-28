@@ -11,15 +11,17 @@ import os
 import jwt
 import functools
 from datetime import datetime, timezone, timedelta
-from flask import request, g
+from typing import Optional
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from app.utils.responses import unauthorized, forbidden
-from app.db import fetchone
 
-SECRET          = os.getenv("JWT_SECRET", "dev-secret")
-ACCESS_MINUTES  = int(os.getenv("JWT_ACCESS_EXPIRY_MINUTES", 60))
-REFRESH_DAYS    = int(os.getenv("JWT_REFRESH_EXPIRY_DAYS", 7))
-COOKIE_ACCESS   = "access_token"
-COOKIE_REFRESH  = "refresh_token"
+SECRET         = os.getenv("JWT_SECRET", "dev-secret")
+ACCESS_MINUTES = int(os.getenv("JWT_ACCESS_EXPIRY_MINUTES", 60))
+REFRESH_DAYS   = int(os.getenv("JWT_REFRESH_EXPIRY_DAYS", 7))
+COOKIE_ACCESS  = "access_token"
+COOKIE_REFRESH = "refresh_token"
+
 
 # ── Token helpers ─────────────────────────────────────────────────────────────
 
@@ -33,7 +35,7 @@ def make_refresh_token(user_id: str) -> str:
     return jwt.encode({"sub": user_id, "exp": exp}, SECRET, algorithm="HS256")
 
 
-def decode_token(token: str) -> dict | None:
+def decode_token(token: str) -> Optional[dict]:
     try:
         return jwt.decode(token, SECRET, algorithms=["HS256"])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
@@ -41,20 +43,20 @@ def decode_token(token: str) -> dict | None:
 
 
 def _is_prod() -> bool:
-    return os.getenv("FLASK_ENV") == "production"
+    return os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")) == "production"
 
 
-def set_auth_cookies(response, user_id: str, role: str):
+def set_auth_cookies(response: Response, user_id: str, role: str):
     prod = _is_prod()
     access  = make_access_token(user_id, role)
     refresh = make_refresh_token(user_id)
-    response.set_cookie(COOKIE_ACCESS,  access,  httponly=True,  secure=prod, samesite="Lax", max_age=ACCESS_MINUTES * 60)
-    response.set_cookie(COOKIE_REFRESH, refresh, httponly=True,  secure=prod, samesite="Lax", max_age=REFRESH_DAYS * 86400)
-    response.set_cookie("user_role",    role,    httponly=False,  secure=prod, samesite="Lax", max_age=ACCESS_MINUTES * 60)
+    response.set_cookie(COOKIE_ACCESS,  access,  httponly=True,  secure=prod, samesite="lax", max_age=ACCESS_MINUTES * 60)
+    response.set_cookie(COOKIE_REFRESH, refresh, httponly=True,  secure=prod, samesite="lax", max_age=REFRESH_DAYS * 86400)
+    response.set_cookie("user_role",    role,    httponly=False, secure=prod, samesite="lax", max_age=ACCESS_MINUTES * 60)
     return response
 
 
-def clear_auth_cookies(response):
+def clear_auth_cookies(response: Response):
     for name in (COOKIE_ACCESS, COOKIE_REFRESH, "user_role"):
         response.delete_cookie(name)
     return response
@@ -62,7 +64,7 @@ def clear_auth_cookies(response):
 
 # ── Token extraction ──────────────────────────────────────────────────────────
 
-def _extract_token() -> str | None:
+def _extract_token(request: Request) -> Optional[str]:
     token = request.cookies.get(COOKIE_ACCESS)
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -71,44 +73,59 @@ def _extract_token() -> str | None:
     return token or None
 
 
-# ── Decorators ────────────────────────────────────────────────────────────────
+# ── Auth state container ──────────────────────────────────────────────────────
 
-def login_required(f):
-    """Injects g.user_id and g.role. Rejects missing/expired tokens."""
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        token = _extract_token()
-        if not token:
-            return unauthorized("Authentication required")
-        payload = decode_token(token)
-        if not payload:
-            return unauthorized("Token expired or invalid")
-        g.user_id = payload["sub"]
-        g.role    = payload["role"]
-        return f(*args, **kwargs)
-    return wrapper
+class AuthState:
+    """Holds the authenticated user's context for a single request."""
+    def __init__(self, user_id: str, role: str, ip: str = None):
+        self.user_id = user_id
+        self.role    = role
+        self.ip      = ip
+
+
+# ── Dependency factories ──────────────────────────────────────────────────────
+
+def get_auth(request: Request) -> Optional[AuthState]:
+    """Extract and validate the JWT; returns AuthState or None."""
+    token = _extract_token(request)
+    if not token:
+        return None
+    payload = decode_token(token)
+    if not payload:
+        return None
+    return AuthState(
+        user_id=payload["sub"],
+        role=payload["role"],
+        ip=request.client.host if request.client else None,
+    )
+
+
+def login_required(request: Request) -> AuthState:
+    """FastAPI dependency — injects AuthState or raises 401."""
+    auth = get_auth(request)
+    if not auth:
+        raise _http_exc(unauthorized("Authentication required"))
+    return auth
 
 
 def roles_required(*allowed):
-    """Must follow @login_required."""
-    def decorator(f):
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            if g.role not in allowed:
-                return forbidden("Insufficient permissions")
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
+    """FastAPI dependency factory — checks role after login_required."""
+    def dependency(auth: AuthState = None, request: Request = None) -> AuthState:
+        # Resolve auth if not injected
+        if auth is None:
+            auth = login_required(request)
+        if auth.role not in allowed:
+            raise _http_exc(forbidden("Insufficient permissions"))
+        return auth
+    return dependency
 
 
-def owner_or_admin(id_param="user_id"):
-    """Allow if requester owns the resource OR is ADMIN."""
-    def decorator(f):
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            target = kwargs.get(id_param)
-            if g.role != "ADMIN" and g.user_id != str(target):
-                return forbidden("Access denied")
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
+# ── Helper to raise HTTP exceptions from JSONResponse ────────────────────────
+
+class _HTTPException(Exception):
+    def __init__(self, response: JSONResponse):
+        self.response = response
+
+
+def _http_exc(response: JSONResponse) -> _HTTPException:
+    return _HTTPException(response)

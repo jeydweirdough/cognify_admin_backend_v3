@@ -2,35 +2,29 @@
 Whitelist routes
   ADMIN  → /api/web/admin/whitelist  (any role)
   FACULTY → /api/web/faculty/whitelist  (STUDENT only)
-Both blueprints share the same query/mutation helpers below.
 """
-import csv, io, json
-from flask import Blueprint, request
-from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, roles_required
-from app.utils.responses import ok, created, no_content, error, not_found, conflict
+import csv, io
+from fastapi import APIRouter, Request, UploadFile, File
+from app.db import fetchone, execute, execute_returning, paginate
+from app.middleware.auth import login_required
+from app.utils.responses import ok, created, no_content, error, not_found, conflict, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import validate_email, require_fields, clean_str
 from app.utils.log import log_action
 
-admin_whitelist_bp   = Blueprint("admin_whitelist",   __name__, url_prefix="/api/web/admin/whitelist")
-faculty_whitelist_bp = Blueprint("faculty_whitelist", __name__, url_prefix="/api/web/faculty/whitelist")
+admin_whitelist_router   = APIRouter(prefix="/api/web/admin/whitelist",   tags=["admin-whitelist"])
+faculty_whitelist_router = APIRouter(prefix="/api/web/faculty/whitelist", tags=["faculty-whitelist"])
 
 VALID_ROLES = {"ADMIN", "FACULTY", "STUDENT"}
 
-# ── Shared query builder ──────────────────────────────────────────────────────
 
-def _list_query(role_filter_lock=None):
-    """
-    Build a paginated whitelist response.
-    role_filter_lock: if set, only that role is queryable (faculty sees STUDENT only).
-    """
-    page, per_page = get_page_params()
-    search = get_search()
-    role   = role_filter_lock or get_filter("role", VALID_ROLES)
-    status = get_filter("status", {"PENDING", "REGISTERED"})
+def _list_query(request: Request, role_filter_lock=None):
+    page, per_page = get_page_params(request)
+    search = get_search(request)
+    role   = role_filter_lock or get_filter(request, "role", VALID_ROLES)
+    status = get_filter(request, "status", {"PENDING", "REGISTERED"})
 
-    sql   = ["SELECT * FROM whitelist WHERE 1=1"]
+    sql    = ["SELECT * FROM whitelist WHERE 1=1"]
     params = []
 
     if search:
@@ -53,7 +47,7 @@ def _list_query(role_filter_lock=None):
     return paginate(" ".join(sql), params, page, per_page)
 
 
-def _add_entry(body: dict, role_lock: str = None, added_by: str = None):
+def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str = None):
     required = ["first_name", "last_name", "institutional_id", "email"]
     if not role_lock:
         required.append("role")
@@ -86,12 +80,11 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None):
             added_by,
         ],
     )
-    log_action("Whitelist entry added", email, str(entry["id"]))
+    log_action("Whitelist entry added", email, str(entry["id"]), user_id=added_by, ip=ip)
     return created(_fmt(entry))
 
 
 def _fmt(e: dict) -> dict:
-    """Serialize a whitelist row to the expected frontend shape."""
     e["id"] = str(e["id"])
     e["name"] = " ".join(filter(None, [e.get("first_name"), e.get("middle_name"), e.get("last_name")]))
     e["studentNumber"] = e.get("institutional_id")
@@ -99,40 +92,55 @@ def _fmt(e: dict) -> dict:
     return e
 
 
+def _apply_fmt(paginated: dict) -> dict:
+    paginated["items"] = [_fmt(e) for e in paginated["items"]]
+    return paginated
+
+
 # ═══════════════════════════════════════════════════════════════
 # ADMIN WHITELIST
 # ═══════════════════════════════════════════════════════════════
 
-@admin_whitelist_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def admin_list():
-    return ok(_apply_fmt(_list_query()))
+@admin_whitelist_router.get("")
+async def admin_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return ok(_apply_fmt(_list_query(request)))
 
 
-@admin_whitelist_bp.post("")
-@login_required
-@roles_required("ADMIN")
-def admin_add():
-    return _add_entry(request.get_json(silent=True) or {}, added_by=request.environ.get("user_id"))
+@admin_whitelist_router.post("")
+async def admin_add(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _add_entry(body, added_by=auth.user_id, ip=auth.ip)
 
 
-@admin_whitelist_bp.post("/bulk")
-@login_required
-@roles_required("ADMIN")
-def admin_bulk():
-    """Accept JSON array or CSV file upload."""
+@admin_whitelist_router.post("/bulk")
+async def admin_bulk(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+
+    content_type = request.headers.get("content-type", "")
     records = []
 
-    if request.content_type and "multipart" in request.content_type:
-        f = request.files.get("file")
+    if "multipart" in content_type:
+        form = await request.form()
+        f = form.get("file")
         if not f:
             return error("No file provided")
-        stream = io.StringIO(f.read().decode("utf-8-sig"))
+        content = await f.read()
+        stream = io.StringIO(content.decode("utf-8-sig"))
         reader = csv.DictReader(stream)
         records = [row for row in reader]
     else:
-        body = request.get_json(silent=True) or {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
         records = body if isinstance(body, list) else body.get("records", [])
 
     if not records:
@@ -140,84 +148,91 @@ def admin_bulk():
 
     succeeded, failed = [], []
     for row in records:
-        resp, status_code = _add_entry(row)
-        data = resp.get_json()
-        if data.get("success"):
-            succeeded.append(data["data"])
+        result = _add_entry(row, added_by=auth.user_id, ip=auth.ip)
+        if hasattr(result, "body"):
+            import json
+            data = json.loads(result.body)
+            if data.get("success"):
+                succeeded.append(data["data"])
+            else:
+                failed.append({"record": row, "reason": data.get("message")})
         else:
-            failed.append({"record": row, "reason": data.get("message")})
+            failed.append({"record": row, "reason": "Unknown error"})
 
-    log_action("Bulk whitelist upload", f"{len(succeeded)} added, {len(failed)} failed")
+    log_action("Bulk whitelist upload", f"{len(succeeded)} added, {len(failed)} failed",
+               user_id=auth.user_id, ip=auth.ip)
     return ok({"added": len(succeeded), "failed": len(failed), "errors": failed})
 
 
-@admin_whitelist_bp.put("/<entry_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_update(entry_id):
-    return _update_entry(entry_id, request.get_json(silent=True) or {})
+@admin_whitelist_router.put("/{entry_id}")
+async def admin_update(request: Request, entry_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update_entry(entry_id, body, auth)
 
 
-@admin_whitelist_bp.delete("/<entry_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_delete(entry_id):
-    return _delete_entry(entry_id)
+@admin_whitelist_router.delete("/{entry_id}")
+async def admin_delete(request: Request, entry_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return _delete_entry(entry_id, auth)
 
 
 # ═══════════════════════════════════════════════════════════════
 # FACULTY WHITELIST  (STUDENT-only view)
 # ═══════════════════════════════════════════════════════════════
 
-@faculty_whitelist_bp.get("")
-@login_required
-@roles_required("FACULTY")
-def faculty_list():
-    return ok(_apply_fmt(_list_query(role_filter_lock="STUDENT")))
+@faculty_whitelist_router.get("")
+async def faculty_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    return ok(_apply_fmt(_list_query(request, role_filter_lock="STUDENT")))
 
 
-@faculty_whitelist_bp.post("")
-@login_required
-@roles_required("FACULTY")
-def faculty_add():
-    return _add_entry(
-        request.get_json(silent=True) or {},
-        role_lock="STUDENT",
-        added_by=request.environ.get("user_id"),
-    )
+@faculty_whitelist_router.post("")
+async def faculty_add(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _add_entry(body, role_lock="STUDENT", added_by=auth.user_id, ip=auth.ip)
 
 
-@faculty_whitelist_bp.put("/<entry_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_update(entry_id):
-    # Faculty may only edit STUDENT entries
+@faculty_whitelist_router.put("/{entry_id}")
+async def faculty_update(request: Request, entry_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     existing = fetchone("SELECT role FROM whitelist WHERE id = %s", [entry_id])
-    if not existing:
-        return not_found("Whitelist entry not found")
+    if not existing: return not_found("Whitelist entry not found")
     if existing["role"] != "STUDENT":
         return error("Faculty can only manage STUDENT whitelist entries", 403)
-    return _update_entry(entry_id, request.get_json(silent=True) or {})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update_entry(entry_id, body, auth)
 
 
-@faculty_whitelist_bp.delete("/<entry_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_delete(entry_id):
+@faculty_whitelist_router.delete("/{entry_id}")
+async def faculty_delete(request: Request, entry_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     existing = fetchone("SELECT role FROM whitelist WHERE id = %s", [entry_id])
-    if not existing:
-        return not_found("Whitelist entry not found")
+    if not existing: return not_found("Whitelist entry not found")
     if existing["role"] != "STUDENT":
         return error("Faculty can only manage STUDENT whitelist entries", 403)
-    return _delete_entry(entry_id)
+    return _delete_entry(entry_id, auth)
 
 
-# ── Shared mutation helpers ────────────────────────────────────────────────────
-
-def _update_entry(entry_id: str, body: dict):
+def _update_entry(entry_id: str, body: dict, auth):
     existing = fetchone("SELECT * FROM whitelist WHERE id = %s", [entry_id])
-    if not existing:
-        return not_found("Whitelist entry not found")
+    if not existing: return not_found("Whitelist entry not found")
     if existing["status"] == "REGISTERED":
         return error("Cannot edit a registered whitelist entry", 409)
 
@@ -237,21 +252,15 @@ def _update_entry(entry_id: str, body: dict):
             entry_id,
         ],
     )
-    log_action("Whitelist entry updated", updated["email"], entry_id)
+    log_action("Whitelist entry updated", updated["email"], entry_id, user_id=auth.user_id, ip=auth.ip)
     return ok(_fmt(updated))
 
 
-def _delete_entry(entry_id: str):
+def _delete_entry(entry_id: str, auth):
     existing = fetchone("SELECT email, status FROM whitelist WHERE id = %s", [entry_id])
-    if not existing:
-        return not_found("Whitelist entry not found")
+    if not existing: return not_found("Whitelist entry not found")
     if existing["status"] == "REGISTERED":
         return error("Cannot delete a registered whitelist entry", 409)
     execute("DELETE FROM whitelist WHERE id = %s", [entry_id])
-    log_action("Whitelist entry deleted", existing["email"], entry_id)
+    log_action("Whitelist entry deleted", existing["email"], entry_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()
-
-
-def _apply_fmt(paginated: dict) -> dict:
-    paginated["items"] = [_fmt(e) for e in paginated["items"]]
-    return paginated

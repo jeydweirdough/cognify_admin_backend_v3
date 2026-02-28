@@ -1,20 +1,22 @@
 """Standardized JSON response helpers."""
-from flask import jsonify
+from fastapi.responses import JSONResponse
+
 
 def ok(data=None, message="Success", status=200):
-    return jsonify({"success": True, "message": message, "data": data}), status
+    return JSONResponse({"success": True, "message": message, "data": data}, status_code=status)
 
 def created(data=None, message="Created"):
     return ok(data, message, 201)
 
 def no_content():
-    return "", 204
+    from fastapi.responses import Response
+    return Response(status_code=204)
 
 def error(message="An error occurred", status=400, errors=None):
     body = {"success": False, "message": message}
     if errors:
         body["errors"] = errors
-    return jsonify(body), status
+    return JSONResponse(body, status_code=status)
 
 def not_found(message="Resource not found"):
     return error(message, 404)

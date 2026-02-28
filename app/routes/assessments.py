@@ -5,22 +5,20 @@ Assessment routes
   Mobile:  /api/mobile/student/assessments — list, fetch, submit
 """
 import json
-from flask import Blueprint, request, g
+from fastapi import APIRouter, Request
 from app.db import fetchone, execute, execute_returning, paginate
-from app.middleware.auth import login_required, roles_required
+from app.middleware.auth import login_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import require_fields, clean_str
 from app.utils.log import log_action
 
-admin_assess_bp   = Blueprint("admin_assess",   __name__, url_prefix="/api/web/admin/assessments")
-faculty_assess_bp = Blueprint("faculty_assess", __name__, url_prefix="/api/web/faculty/assessments")
-mobile_assess_bp  = Blueprint("mobile_assess",  __name__, url_prefix="/api/mobile/student/assessments")
+admin_assess_router   = APIRouter(prefix="/api/web/admin/assessments",       tags=["admin-assessments"])
+faculty_assess_router = APIRouter(prefix="/api/web/faculty/assessments",     tags=["faculty-assessments"])
+mobile_assess_router  = APIRouter(prefix="/api/mobile/student/assessments",  tags=["mobile-assessments"])
 
 VALID_TYPES    = {"PRE_ASSESSMENT", "QUIZ", "POST_ASSESSMENT"}
 VALID_STATUSES = {"DRAFT", "PENDING", "APPROVED", "REJECTED", "REVISION_REQUESTED"}
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
 
 _SELECT = """
     SELECT a.*,
@@ -43,12 +41,12 @@ def _fmt(a: dict, include_questions=False) -> dict:
     return a
 
 
-def _list(extra_where="", extra_params=None):
-    page, per_page = get_page_params()
-    search = get_search()
-    atype  = get_filter("type", VALID_TYPES)
-    status = get_filter("status", VALID_STATUSES)
-    subject_id = (request.args.get("subject_id") or "").strip() or None
+def _list(request: Request, extra_where="", extra_params=None):
+    page, per_page = get_page_params(request)
+    search = get_search(request)
+    atype  = get_filter(request, "type", VALID_TYPES)
+    status = get_filter(request, "status", VALID_STATUSES)
+    subject_id = (request.query_params.get("subject_id") or "").strip() or None
 
     sql    = [_SELECT, "WHERE 1=1"]
     params = []
@@ -83,209 +81,220 @@ def _list(extra_where="", extra_params=None):
 # ADMIN
 # ═══════════════════════════════════════════════════════════════
 
-@admin_assess_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def admin_list():
-    return ok(_list())
+@admin_assess_router.get("")
+async def admin_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return ok(_list(request))
 
 
-@admin_assess_bp.get("/<assess_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_get(assess_id):
+@admin_assess_router.get("/{assess_id}")
+async def admin_get(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     a = fetchone(_SELECT + "WHERE a.id = %s", [assess_id])
     return ok(_fmt(a, include_questions=True)) if a else not_found()
 
 
-@admin_assess_bp.post("")
-@login_required
-@roles_required("ADMIN")
-def admin_create():
-    return _create(auto_approve=True)
+@admin_assess_router.post("")
+async def admin_create(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _create(body, auth, auto_approve=True)
 
 
-@admin_assess_bp.put("/<assess_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_update(assess_id):
-    return _update(assess_id, can_approve=True)
+@admin_assess_router.put("/{assess_id}")
+async def admin_update(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update(assess_id, body, auth, can_approve=True)
 
 
-@admin_assess_bp.patch("/<assess_id>/status")
-@login_required
-@roles_required("ADMIN")
-def admin_update_status(assess_id):
-    body   = request.get_json(silent=True) or {}
+@admin_assess_router.patch("/{assess_id}/status")
+async def admin_update_status(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     action = (body.get("status") or "").upper()
     if action not in {"APPROVED", "REJECTED", "REVISION_REQUESTED"}:
         return error("status must be APPROVED, REJECTED, or REVISION_REQUESTED")
     a = fetchone("SELECT id, title FROM assessments WHERE id = %s", [assess_id])
-    if not a:
-        return not_found()
+    if not a: return not_found()
     execute("UPDATE assessments SET status = %s WHERE id = %s", [action, assess_id])
-    log_action(f"Assessment {action.lower()}", a["title"], assess_id)
+    log_action(f"Assessment {action.lower()}", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": assess_id, "status": action})
 
 
-@admin_assess_bp.delete("/<assess_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_delete(assess_id):
-    return _delete(assess_id, only_own=False)
+@admin_assess_router.delete("/{assess_id}")
+async def admin_delete(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return _delete(assess_id, auth, only_own=False)
 
 
 # ═══════════════════════════════════════════════════════════════
 # FACULTY
 # ═══════════════════════════════════════════════════════════════
 
-@faculty_assess_bp.get("")
-@login_required
-@roles_required("FACULTY")
-def faculty_list():
-    return ok(_list("AND (a.author_id = %s OR a.status = 'APPROVED')", [g.user_id]))
+@faculty_assess_router.get("")
+async def faculty_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    return ok(_list(request, "AND (a.author_id = %s OR a.status = 'APPROVED')", [auth.user_id]))
 
 
-@faculty_assess_bp.get("/<assess_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_get(assess_id):
+@faculty_assess_router.get("/{assess_id}")
+async def faculty_get(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     a = fetchone(_SELECT + "WHERE a.id = %s AND (a.author_id = %s OR a.status = 'APPROVED')",
-                 [assess_id, g.user_id])
+                 [assess_id, auth.user_id])
     return ok(_fmt(a, include_questions=True)) if a else not_found()
 
 
-@faculty_assess_bp.post("")
-@login_required
-@roles_required("FACULTY")
-def faculty_create():
-    return _create(auto_approve=False)
+@faculty_assess_router.post("")
+async def faculty_create(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _create(body, auth, auto_approve=False)
 
 
-@faculty_assess_bp.put("/<assess_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_update(assess_id):
+@faculty_assess_router.put("/{assess_id}")
+async def faculty_update(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     existing = fetchone("SELECT author_id FROM assessments WHERE id = %s", [assess_id])
-    if not existing:
-        return not_found()
-    if str(existing["author_id"]) != g.user_id:
+    if not existing: return not_found()
+    if str(existing["author_id"]) != auth.user_id:
         return forbidden("You can only edit your own assessments")
-    return _update(assess_id, can_approve=False)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update(assess_id, body, auth, can_approve=False)
 
 
-@faculty_assess_bp.patch("/<assess_id>/submit")
-@login_required
-@roles_required("FACULTY")
-def faculty_submit(assess_id):
+@faculty_assess_router.patch("/{assess_id}/submit")
+async def faculty_submit(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     a = fetchone("SELECT id, title, author_id FROM assessments WHERE id = %s", [assess_id])
-    if not a:
-        return not_found()
-    if str(a["author_id"]) != g.user_id:
-        return forbidden()
+    if not a: return not_found()
+    if str(a["author_id"]) != auth.user_id: return forbidden()
     execute("UPDATE assessments SET status = 'PENDING' WHERE id = %s", [assess_id])
-    log_action("Submitted assessment for review", a["title"], assess_id)
+    log_action("Submitted assessment for review", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": assess_id, "status": "PENDING"})
 
 
-@faculty_assess_bp.delete("/<assess_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_delete(assess_id):
-    return _delete(assess_id, only_own=True)
+@faculty_assess_router.delete("/{assess_id}")
+async def faculty_delete(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    return _delete(assess_id, auth, only_own=True)
 
 
 # ═══════════════════════════════════════════════════════════════
 # MOBILE — students take assessments
 # ═══════════════════════════════════════════════════════════════
 
-@mobile_assess_bp.get("")
-@login_required
-@roles_required("STUDENT")
-def mobile_list():
-    return ok(_list("AND a.status = 'APPROVED'"))
+@mobile_assess_router.get("")
+async def mobile_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
+    return ok(_list(request, "AND a.status = 'APPROVED'"))
 
 
-@mobile_assess_bp.get("/<assess_id>")
-@login_required
-@roles_required("STUDENT")
-def mobile_get(assess_id):
+@mobile_assess_router.get("/{assess_id}")
+async def mobile_get(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
     a = fetchone(_SELECT + "WHERE a.id = %s AND a.status = 'APPROVED'", [assess_id])
-    if not a:
-        return not_found()
+    if not a: return not_found()
     return ok(_fmt(a, include_questions=True))
 
 
-@mobile_assess_bp.post("/<assess_id>/submit")
-@login_required
-@roles_required("STUDENT")
-def mobile_submit(assess_id):
-    """Grade a student's assessment submission."""
+@mobile_assess_router.post("/{assess_id}/submit")
+async def mobile_submit(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
     a = fetchone("SELECT * FROM assessments WHERE id = %s AND status = 'APPROVED'", [assess_id])
-    if not a:
-        return not_found("Assessment not found or not available")
+    if not a: return not_found("Assessment not found or not available")
 
-    body = request.get_json(silent=True) or {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     student_answers = {str(ans["question_id"]): ans["answer"] for ans in body.get("answers", [])}
     time_taken = body.get("time_taken_s") or body.get("timeTakenSeconds")
 
-    questions  = a["questions"] or []
-    total      = len(questions)
-    correct    = 0
+    questions = a["questions"] or []
+    total = len(questions)
+    correct = 0
     scored_ans = []
 
     for q in questions:
-        qid    = str(q["id"])
-        given  = student_answers.get(qid, "")
-        is_ok  = str(given).strip().lower() == str(q.get("answer", "")).strip().lower()
+        qid   = str(q["id"])
+        given = student_answers.get(qid, "")
+        is_ok = str(given).strip().lower() == str(q.get("answer", "")).strip().lower()
         correct += 1 if is_ok else 0
         scored_ans.append({"question_id": qid, "answer": given, "correct": is_ok})
 
     passing_row = fetchone("SELECT institutional_passing_grade FROM system_settings LIMIT 1")
     pass_grade  = (passing_row or {}).get("institutional_passing_grade", 75)
-    score       = round((correct / total) * 100, 2) if total else 0
-    passed      = score >= pass_grade
+    score  = round((correct / total) * 100, 2) if total else 0
+    passed = score >= pass_grade
 
     submission = execute_returning(
         """INSERT INTO assessment_submissions
                (assessment_id, student_id, score, passed, correct, total, answers, time_taken_s)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, submitted_at""",
-        [assess_id, g.user_id, score, passed, correct, total,
-         json.dumps(scored_ans), time_taken],
+        [assess_id, auth.user_id, score, passed, correct, total, json.dumps(scored_ans), time_taken],
     )
-    log_action("Assessment submitted", a["title"], assess_id)
+    log_action("Assessment submitted", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     return ok({
-        "submission_id":   str(submission["id"]),
-        "score":           score,
-        "passed":          passed,
-        "correct_count":   correct,
-        "total_items":     total,
-        "passing_grade":   pass_grade,
-        "submitted_at":    submission["submitted_at"].isoformat(),
+        "submission_id":  str(submission["id"]),
+        "score":          score,
+        "passed":         passed,
+        "correct_count":  correct,
+        "total_items":    total,
+        "passing_grade":  pass_grade,
+        "submitted_at":   submission["submitted_at"].isoformat(),
     })
 
 
-@mobile_assess_bp.get("/<assess_id>/result")
-@login_required
-@roles_required("STUDENT")
-def mobile_result(assess_id):
-    """Get the most recent result for a student on this assessment."""
+@mobile_assess_router.get("/{assess_id}/result")
+async def mobile_result(request: Request, assess_id: str):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
     sub = fetchone(
         """SELECT * FROM assessment_submissions
            WHERE assessment_id = %s AND student_id = %s
            ORDER BY submitted_at DESC LIMIT 1""",
-        [assess_id, g.user_id],
+        [assess_id, auth.user_id],
     )
-    if not sub:
-        return not_found("No submission found")
+    if not sub: return not_found("No submission found")
     sub["id"] = str(sub["id"])
     return ok(sub)
 
 
-# ── Shared create / update / delete ───────────────────────────────────────────
+# ── Shared helpers ────────────────────────────────────────────────────────────
 
-def _create(auto_approve: bool):
-    body = request.get_json(silent=True) or {}
+def _create(body: dict, auth, auto_approve: bool):
     missing = require_fields(body, ["title", "type"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -294,7 +303,7 @@ def _create(auto_approve: bool):
     if atype not in VALID_TYPES:
         return error(f"type must be one of: {', '.join(VALID_TYPES)}")
 
-    status = "APPROVED" if auto_approve else (body.get("status") or "DRAFT").upper()
+    status    = "APPROVED" if auto_approve else (body.get("status") or "DRAFT").upper()
     questions = body.get("questions", [])
 
     a = execute_returning(
@@ -309,18 +318,16 @@ def _create(auto_approve: bool):
             json.dumps(questions),
             len(questions),
             status,
-            g.user_id,
+            auth.user_id,
         ],
     )
-    log_action("Created assessment", a["title"], str(a["id"]))
+    log_action("Created assessment", a["title"], str(a["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(_fmt(a, include_questions=True))
 
 
-def _update(assess_id: str, can_approve: bool):
+def _update(assess_id: str, body: dict, auth, can_approve: bool):
     existing = fetchone("SELECT * FROM assessments WHERE id = %s", [assess_id])
-    if not existing:
-        return not_found()
-    body = request.get_json(silent=True) or {}
+    if not existing: return not_found()
 
     new_status = (body.get("status") or existing["status"]).upper()
     if not can_approve and new_status == "APPROVED":
@@ -343,18 +350,17 @@ def _update(assess_id: str, can_approve: bool):
             assess_id,
         ],
     )
-    log_action("Updated assessment", a["title"], assess_id)
+    log_action("Updated assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     return ok(_fmt(a, include_questions=True))
 
 
-def _delete(assess_id: str, only_own: bool):
+def _delete(assess_id: str, auth, only_own: bool):
     a = fetchone("SELECT author_id, title, status FROM assessments WHERE id = %s", [assess_id])
-    if not a:
-        return not_found()
-    if only_own and str(a["author_id"]) != g.user_id:
+    if not a: return not_found()
+    if only_own and str(a["author_id"]) != auth.user_id:
         return forbidden("You can only delete your own assessments")
     if a["status"] == "APPROVED":
         return error("Cannot delete an approved assessment", 409)
     execute("DELETE FROM assessments WHERE id = %s", [assess_id])
-    log_action("Deleted assessment", a["title"], assess_id)
+    log_action("Deleted assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()

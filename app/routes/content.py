@@ -4,21 +4,20 @@ Content module routes
   Faculty: /api/web/faculty/content  — CRUD (creates as DRAFT/PENDING)
   Mobile:  /api/mobile/student/content — read approved only + mark read
 """
-from flask import Blueprint, request, g
-from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, roles_required
+import json
+from fastapi import APIRouter, Request
+from app.db import fetchone, execute, execute_returning, paginate
+from app.middleware.auth import login_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import require_fields, clean_str
 from app.utils.log import log_action
 
-admin_content_bp   = Blueprint("admin_content",   __name__, url_prefix="/api/web/admin/content")
-faculty_content_bp = Blueprint("faculty_content", __name__, url_prefix="/api/web/faculty/content")
-mobile_content_bp  = Blueprint("mobile_content",  __name__, url_prefix="/api/mobile/student/content")
+admin_content_router   = APIRouter(prefix="/api/web/admin/content",        tags=["admin-content"])
+faculty_content_router = APIRouter(prefix="/api/web/faculty/content",      tags=["faculty-content"])
+mobile_content_router  = APIRouter(prefix="/api/mobile/student/content",   tags=["mobile-content"])
 
 VALID_STATUSES = {"DRAFT", "PENDING", "APPROVED", "REVISION_REQUESTED", "REJECTED", "REMOVAL_PENDING"}
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
 
 _SELECT = """
     SELECT cm.*,
@@ -40,11 +39,11 @@ def _fmt(c: dict) -> dict:
     return c
 
 
-def _list(extra_where: str = "", extra_params: list = None):
-    page, per_page = get_page_params()
-    search = get_search()
-    status = get_filter("status", VALID_STATUSES)
-    subject_id = (request.args.get("subject_id") or "").strip() or None
+def _list(request: Request, extra_where: str = "", extra_params: list = None):
+    page, per_page = get_page_params(request)
+    search = get_search(request)
+    status = get_filter(request, "status", VALID_STATUSES)
+    subject_id = (request.query_params.get("subject_id") or "").strip() or None
 
     sql    = [_SELECT, "WHERE 1=1"]
     params = []
@@ -75,204 +74,207 @@ def _list(extra_where: str = "", extra_params: list = None):
 # ADMIN
 # ═══════════════════════════════════════════════════════════════
 
-@admin_content_bp.get("")
-@login_required
-@roles_required("ADMIN")
-def admin_list():
-    return ok(_list())
+@admin_content_router.get("")
+async def admin_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return ok(_list(request))
 
 
-@admin_content_bp.get("/<content_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_get(content_id):
+@admin_content_router.get("/{content_id}")
+async def admin_get(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
     c = fetchone(_SELECT + "WHERE cm.id = %s", [content_id])
     return ok(_fmt(c)) if c else not_found()
 
 
-@admin_content_bp.post("")
-@login_required
-@roles_required("ADMIN")
-def admin_create():
-    return _create(auto_approve=True)
+@admin_content_router.post("")
+async def admin_create(request: Request):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _create(body, auth, auto_approve=True)
 
 
-@admin_content_bp.put("/<content_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_update(content_id):
-    return _update(content_id, can_approve=True)
+@admin_content_router.put("/{content_id}")
+async def admin_update(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update(content_id, body, auth, can_approve=True)
 
 
-@admin_content_bp.patch("/<content_id>/status")
-@login_required
-@roles_required("ADMIN")
-def admin_update_status(content_id):
-    """Approve, reject or request revision on a pending content module."""
-    body   = request.get_json(silent=True) or {}
+@admin_content_router.patch("/{content_id}/status")
+async def admin_update_status(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     action = (body.get("status") or "").upper()
-
     allowed_transitions = {"APPROVED", "REJECTED", "REVISION_REQUESTED"}
     if action not in allowed_transitions:
         return error(f"status must be one of: {', '.join(allowed_transitions)}")
 
     c = fetchone("SELECT id, title, revision_notes FROM content_modules WHERE id = %s", [content_id])
-    if not c:
-        return not_found()
+    if not c: return not_found()
 
     notes = c["revision_notes"] or []
     if action == "REVISION_REQUESTED" and body.get("note"):
         from datetime import datetime, timezone
-        notes.append({"note": body["note"], "date": datetime.now(timezone.utc).isoformat(), "by": g.user_id})
+        notes.append({"note": body["note"], "date": datetime.now(timezone.utc).isoformat(), "by": auth.user_id})
 
-    import json
     execute(
         "UPDATE content_modules SET status = %s, revision_notes = %s WHERE id = %s",
         [action, json.dumps(notes), content_id],
     )
-    log_action(f"Content {action.lower()}", c["title"], content_id)
+    log_action(f"Content {action.lower()}", c["title"], content_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": content_id, "status": action})
 
 
-@admin_content_bp.delete("/<content_id>")
-@login_required
-@roles_required("ADMIN")
-def admin_delete(content_id):
-    return _delete(content_id, only_own=False)
+@admin_content_router.delete("/{content_id}")
+async def admin_delete(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    return _delete(content_id, auth, only_own=False)
 
 
 # ═══════════════════════════════════════════════════════════════
 # FACULTY
 # ═══════════════════════════════════════════════════════════════
 
-@faculty_content_bp.get("")
-@login_required
-@roles_required("FACULTY")
-def faculty_list():
-    # Faculty sees own content + approved content
-    return ok(_list("AND (cm.author_id = %s OR cm.status = 'APPROVED')", [g.user_id]))
+@faculty_content_router.get("")
+async def faculty_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    return ok(_list(request, "AND (cm.author_id = %s OR cm.status = 'APPROVED')", [auth.user_id]))
 
 
-@faculty_content_bp.get("/<content_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_get(content_id):
+@faculty_content_router.get("/{content_id}")
+async def faculty_get(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     c = fetchone(_SELECT + "WHERE cm.id = %s AND (cm.author_id = %s OR cm.status = 'APPROVED')",
-                 [content_id, g.user_id])
+                 [content_id, auth.user_id])
     return ok(_fmt(c)) if c else not_found()
 
 
-@faculty_content_bp.post("")
-@login_required
-@roles_required("FACULTY")
-def faculty_create():
-    return _create(auto_approve=False)
+@faculty_content_router.post("")
+async def faculty_create(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _create(body, auth, auto_approve=False)
 
 
-@faculty_content_bp.put("/<content_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_update(content_id):
+@faculty_content_router.put("/{content_id}")
+async def faculty_update(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     existing = fetchone("SELECT author_id FROM content_modules WHERE id = %s", [content_id])
-    if not existing:
-        return not_found()
-    if str(existing["author_id"]) != g.user_id:
+    if not existing: return not_found()
+    if str(existing["author_id"]) != auth.user_id:
         return forbidden("You can only edit your own content")
-    return _update(content_id, can_approve=False)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _update(content_id, body, auth, can_approve=False)
 
 
-@faculty_content_bp.patch("/<content_id>/submit")
-@login_required
-@roles_required("FACULTY")
-def faculty_submit(content_id):
-    """Faculty submits draft for admin review."""
+@faculty_content_router.patch("/{content_id}/submit")
+async def faculty_submit(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     c = fetchone("SELECT id, title, author_id, submission_count FROM content_modules WHERE id = %s", [content_id])
-    if not c:
-        return not_found()
-    if str(c["author_id"]) != g.user_id:
-        return forbidden()
+    if not c: return not_found()
+    if str(c["author_id"]) != auth.user_id: return forbidden()
     execute("UPDATE content_modules SET status = 'PENDING', submission_count = %s WHERE id = %s",
             [c["submission_count"] + 1, content_id])
-    log_action("Submitted content for review", c["title"], content_id)
+    log_action("Submitted content for review", c["title"], content_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": content_id, "status": "PENDING"})
 
 
-@faculty_content_bp.patch("/<content_id>/request-removal")
-@login_required
-@roles_required("FACULTY")
-def faculty_request_removal(content_id):
+@faculty_content_router.patch("/{content_id}/request-removal")
+async def faculty_request_removal(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
     c = fetchone("SELECT id, title, author_id, status FROM content_modules WHERE id = %s", [content_id])
-    if not c:
-        return not_found()
-    if str(c["author_id"]) != g.user_id:
-        return forbidden()
+    if not c: return not_found()
+    if str(c["author_id"]) != auth.user_id: return forbidden()
     execute("UPDATE content_modules SET status = 'REMOVAL_PENDING' WHERE id = %s", [content_id])
-    log_action("Requested content removal", c["title"], content_id)
+    log_action("Requested content removal", c["title"], content_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": content_id, "status": "REMOVAL_PENDING"})
 
 
-@faculty_content_bp.delete("/<content_id>")
-@login_required
-@roles_required("FACULTY")
-def faculty_delete(content_id):
-    return _delete(content_id, only_own=True)
+@faculty_content_router.delete("/{content_id}")
+async def faculty_delete(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    return _delete(content_id, auth, only_own=True)
 
 
 # ═══════════════════════════════════════════════════════════════
-# MOBILE — read approved + progress tracking
+# MOBILE
 # ═══════════════════════════════════════════════════════════════
 
-@mobile_content_bp.get("")
-@login_required
-@roles_required("STUDENT")
-def mobile_list():
-    result = _list("AND cm.status = 'APPROVED'")
-    return ok(result)
+@mobile_content_router.get("")
+async def mobile_list(request: Request):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
+    return ok(_list(request, "AND cm.status = 'APPROVED'"))
 
 
-@mobile_content_bp.get("/<content_id>")
-@login_required
-@roles_required("STUDENT")
-def mobile_get(content_id):
+@mobile_content_router.get("/{content_id}")
+async def mobile_get(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
     c = fetchone(_SELECT + "WHERE cm.id = %s AND cm.status = 'APPROVED'", [content_id])
-    if not c:
-        return not_found()
+    if not c: return not_found()
     c = _fmt(c)
-    # Attach progress
     progress = fetchone(
         "SELECT completed_at FROM student_progress WHERE student_id = %s AND content_id = %s",
-        [g.user_id, content_id],
+        [auth.user_id, content_id],
     )
     c["completed"] = progress is not None
     c["completed_at"] = progress["completed_at"].isoformat() if progress else None
     return ok(c)
 
 
-@mobile_content_bp.post("/<content_id>/complete")
-@login_required
-@roles_required("STUDENT")
-def mobile_mark_complete(content_id):
+@mobile_content_router.post("/{content_id}/complete")
+async def mobile_mark_complete(request: Request, content_id: str):
+    auth = login_required(request)
+    if auth.role != "STUDENT": return forbidden()
     if not fetchone("SELECT id FROM content_modules WHERE id = %s AND status = 'APPROVED'", [content_id]):
         return not_found()
-    # Upsert
     execute(
         """INSERT INTO student_progress (student_id, content_id)
            VALUES (%s, %s) ON CONFLICT DO NOTHING""",
-        [g.user_id, content_id],
+        [auth.user_id, content_id],
     )
     return ok({"content_id": content_id, "completed": True})
 
 
 # ── Shared create / update / delete ───────────────────────────────────────────
 
-def _create(auto_approve: bool):
-    body = request.get_json(silent=True) or {}
+def _create(body: dict, auth, auto_approve: bool):
     missing = require_fields(body, ["title"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
 
     status = "APPROVED" if auto_approve else (body.get("status") or "DRAFT").upper()
-    u = fetchone("SELECT first_name, last_name FROM users WHERE id = %s", [g.user_id])
+    u = fetchone("SELECT first_name, last_name FROM users WHERE id = %s", [auth.user_id])
     author_name = f"{u['first_name']} {u['last_name']}" if u else None
 
     c = execute_returning(
@@ -288,27 +290,23 @@ def _create(auto_approve: bool):
             body.get("content"),
             (body.get("format") or "TEXT").upper(),
             body.get("file_url"),
-            status,
-            0,
-            g.user_id,
+            status, 0,
+            auth.user_id,
             author_name,
         ],
     )
-    log_action("Created content module", c["title"], str(c["id"]))
+    log_action("Created content module", c["title"], str(c["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(_fmt(c))
 
 
-def _update(content_id: str, can_approve: bool):
+def _update(content_id: str, body: dict, auth, can_approve: bool):
     existing = fetchone("SELECT * FROM content_modules WHERE id = %s", [content_id])
-    if not existing:
-        return not_found()
-    body = request.get_json(silent=True) or {}
+    if not existing: return not_found()
 
     new_status = (body.get("status") or existing["status"]).upper()
     if not can_approve and new_status == "APPROVED":
         new_status = "PENDING"
 
-    import json
     c = execute_returning(
         """UPDATE content_modules
            SET title = %s, subject_id = %s, topic_id = %s, content = %s,
@@ -328,18 +326,17 @@ def _update(content_id: str, can_approve: bool):
             content_id,
         ],
     )
-    log_action("Updated content module", c["title"], content_id)
+    log_action("Updated content module", c["title"], content_id, user_id=auth.user_id, ip=auth.ip)
     return ok(_fmt(c))
 
 
-def _delete(content_id: str, only_own: bool):
+def _delete(content_id: str, auth, only_own: bool):
     c = fetchone("SELECT author_id, title, status FROM content_modules WHERE id = %s", [content_id])
-    if not c:
-        return not_found()
-    if only_own and str(c["author_id"]) != g.user_id:
+    if not c: return not_found()
+    if only_own and str(c["author_id"]) != auth.user_id:
         return forbidden("You can only delete your own content")
     if c["status"] == "APPROVED":
         return error("Cannot delete approved content. Submit a removal request instead.", 409)
     execute("DELETE FROM content_modules WHERE id = %s", [content_id])
-    log_action("Deleted content module", c["title"], content_id)
+    log_action("Deleted content module", c["title"], content_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()
