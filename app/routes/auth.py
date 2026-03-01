@@ -26,7 +26,7 @@ mobile_auth_router = APIRouter(prefix="/api/mobile/auth", tags=["mobile-auth"])
 def _fetch_user_by_email(email: str):
     return fetchone(
         """SELECT u.id, u.email, u.password, u.status,
-                  u.first_name, u.last_name, u.institutional_id,
+                  u.first_name, u.last_name, u.cvsu_id,
                   r.name AS role
            FROM users u
            JOIN roles r ON u.role_id = r.id
@@ -64,7 +64,7 @@ def _build_login_response(user):
         "first_name":   user["first_name"],
         "last_name":    user["last_name"],
         "role":         user["role"],
-        "institutional_id": user.get("institutional_id"),
+        "cvsu_id": user.get("cvsu_id"),
     }
     response = JSONResponse({"success": True, "message": "Login successful", "data": payload})
     set_auth_cookies(response, str(user["id"]), user["role"])
@@ -73,7 +73,7 @@ def _build_login_response(user):
 
 
 def _register(body: dict, expected_role: str):
-    required = ["institutional_id", "first_name", "last_name", "email", "password"]
+    required = ["cvsu_id", "first_name", "last_name", "email", "password"]
     missing = require_fields(body, required)
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -88,8 +88,8 @@ def _register(body: dict, expected_role: str):
 
     entry = fetchone(
         """SELECT id, role, status FROM whitelist
-           WHERE LOWER(email) = %s AND LOWER(institutional_id) = LOWER(%s)""",
-        [email, body["institutional_id"]],
+           WHERE LOWER(email) = %s AND LOWER(cvsu_id) = LOWER(%s)""",
+        [email, body["cvsu_id"]],
     )
     if not entry:
         label = "student number" if expected_role == "STUDENT" else "faculty ID"
@@ -111,20 +111,27 @@ def _register(body: dict, expected_role: str):
         return error("Role configuration error. Contact admin.", 500)
 
     hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
+
+    # Faculty registering via the web app are already vetted (whitelisted by admin),
+    # so they become ACTIVE immediately — matching the original frontend behavior.
+    # Students registering via mobile stay PENDING until approved.
+    initial_status = "ACTIVE" if expected_role == "FACULTY" else "PENDING"
+
     user = execute_returning(
         """INSERT INTO users
-               (institutional_id, first_name, middle_name, last_name,
+               (cvsu_id, first_name, middle_name, last_name,
                 email, password, role_id, status, department)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING', %s)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
            RETURNING id, first_name, last_name, email, status""",
         [
-            body["institutional_id"],
+            body["cvsu_id"],
             clean_str(body["first_name"]),
             clean_str(body.get("middle_name")),
             clean_str(body["last_name"]),
             email,
             hashed,
             role_row["id"],
+            initial_status,
             clean_str(body.get("department")),
         ],
     )
@@ -132,6 +139,11 @@ def _register(body: dict, expected_role: str):
     execute("UPDATE whitelist SET status = 'REGISTERED' WHERE id = %s", [entry["id"]])
     log_action(f"{expected_role} registered", email, str(user["id"]))
 
+    if expected_role == "FACULTY":
+        return created(
+            {"id": str(user["id"]), "email": user["email"]},
+            "Account created successfully. You can now log in.",
+        )
     return created(
         {"id": str(user["id"]), "email": user["email"]},
         "Registration submitted. Awaiting approval.",
@@ -274,7 +286,7 @@ def _refresh_token(request: Request):
 
 def _me(auth: AuthState):
     user = fetchone(
-        """SELECT u.id, u.institutional_id, u.first_name, u.middle_name, u.last_name,
+        """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
                   r.id AS role_id, r.name AS role_name, r.permissions
            FROM users u JOIN roles r ON u.role_id = r.id

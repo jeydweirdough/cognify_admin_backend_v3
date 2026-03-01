@@ -24,14 +24,14 @@ def _get_subject_tree(subject_id: str) -> dict | None:
     if not s:
         return None
     s["id"] = str(s["id"])
-    s["topics"] = _build_topic_tree(subject_id)
+    s["modules"] = _build_module_tree(subject_id)
     return s
 
 
-def _build_topic_tree(subject_id: str, parent_id=None) -> list:
+def _build_module_tree(subject_id: str, parent_id=None) -> list:
     rows = fetchall(
         """SELECT t.*, u.first_name || ' ' || u.last_name AS created_by_name
-           FROM topics t LEFT JOIN users u ON u.id = t.created_by
+           FROM modules t LEFT JOIN users u ON u.id = t.created_by
            WHERE t.subject_id = %s AND t.parent_id IS NOT DISTINCT FROM %s
            ORDER BY t.sort_order, t.created_at""",
         [subject_id, parent_id],
@@ -40,7 +40,7 @@ def _build_topic_tree(subject_id: str, parent_id=None) -> list:
     for r in rows:
         r["id"] = str(r["id"])
         r["subject_id"] = str(r["subject_id"])
-        r["subTopics"] = _build_topic_tree(subject_id, r["id"])
+        r["subModules"] = _build_module_tree(subject_id, r["id"])
         result.append(r)
     return result
 
@@ -60,8 +60,8 @@ def _list_subjects(request: Request, status_filter=None):
     result = paginate(" ".join(sql), params, page, per_page)
     for s in result["items"]:
         s["id"] = str(s["id"])
-        cnt = fetchone("SELECT COUNT(*) AS c FROM topics WHERE subject_id = %s", [s["id"]])
-        s["topic_count"] = cnt["c"] if cnt else 0
+        cnt = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s", [s["id"]])
+        s["module_count"] = cnt["c"] if cnt else 0
     return result
 
 
@@ -180,8 +180,8 @@ async def admin_approve_change(request: Request, change_id: str):
             "UPDATE subjects SET name = %s, description = %s, color = %s WHERE id = %s",
             [data.get("name"), data.get("description"), data.get("color"), change["subject_id"]],
         )
-        if data.get("topics"):
-            _save_topic_tree(str(change["subject_id"]), data["topics"])
+        if data.get("modules"):
+            _save_module_tree(str(change["subject_id"]), data["modules"])
 
     execute(
         "UPDATE pending_subject_changes SET status = %s, reviewed_by = %s, review_note = %s, reviewed_at = NOW() WHERE id = %s",
@@ -191,33 +191,33 @@ async def admin_approve_change(request: Request, change_id: str):
     return ok({"action": action})
 
 
-@admin_subjects_router.post("/{subject_id}/topics")
-async def admin_add_topic(request: Request, subject_id: str):
+@admin_subjects_router.post("/{subject_id}/modules")
+async def admin_add_module(request: Request, subject_id: str):
     auth = login_required(request)
     if auth.role != "ADMIN": return forbidden()
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _add_topic(subject_id, body, auth, auto_approve=True)
+    return _add_module(subject_id, body, auth, auto_approve=True)
 
 
-@admin_subjects_router.put("/{subject_id}/topics/{topic_id}")
-async def admin_update_topic(request: Request, subject_id: str, topic_id: str):
+@admin_subjects_router.put("/{subject_id}/modules/{module_id}")
+async def admin_update_module(request: Request, subject_id: str, module_id: str):
     auth = login_required(request)
     if auth.role != "ADMIN": return forbidden()
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _update_topic(topic_id, body, auth, auto_approve=True)
+    return _update_module(module_id, body, auth, auto_approve=True)
 
 
-@admin_subjects_router.delete("/{subject_id}/topics/{topic_id}")
-async def admin_delete_topic(request: Request, subject_id: str, topic_id: str):
+@admin_subjects_router.delete("/{subject_id}/modules/{module_id}")
+async def admin_delete_module(request: Request, subject_id: str, module_id: str):
     auth = login_required(request)
     if auth.role != "ADMIN": return forbidden()
-    execute("DELETE FROM topics WHERE id = %s AND subject_id = %s", [topic_id, subject_id])
+    execute("DELETE FROM modules WHERE id = %s AND subject_id = %s", [module_id, subject_id])
     return no_content()
 
 
@@ -240,26 +240,26 @@ async def faculty_get(request: Request, subject_id: str):
     return ok(s) if s else not_found()
 
 
-@faculty_subjects_router.post("/{subject_id}/topics")
-async def faculty_add_topic(request: Request, subject_id: str):
+@faculty_subjects_router.post("/{subject_id}/modules")
+async def faculty_add_module(request: Request, subject_id: str):
     auth = login_required(request)
     if auth.role != "FACULTY": return forbidden()
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _add_topic(subject_id, body, auth, auto_approve=False)
+    return _add_module(subject_id, body, auth, auto_approve=False)
 
 
-@faculty_subjects_router.put("/{subject_id}/topics/{topic_id}")
-async def faculty_update_topic(request: Request, subject_id: str, topic_id: str):
+@faculty_subjects_router.put("/{subject_id}/modules/{module_id}")
+async def faculty_update_module(request: Request, subject_id: str, module_id: str):
     auth = login_required(request)
     if auth.role != "FACULTY": return forbidden()
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _update_topic(topic_id, body, auth, auto_approve=False)
+    return _update_module(module_id, body, auth, auto_approve=False)
 
 
 @faculty_subjects_router.post("/{subject_id}/submit-change")
@@ -301,7 +301,7 @@ async def mobile_get(request: Request, subject_id: str):
 
 # ── Shared topic helpers ───────────────────────────────────────────────────────
 
-def _add_topic(subject_id: str, body: dict, auth, auto_approve: bool):
+def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
     if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
         return not_found("Subject not found")
     missing = require_fields(body, ["title"])
@@ -310,54 +310,54 @@ def _add_topic(subject_id: str, body: dict, auth, auto_approve: bool):
 
     status = "APPROVED" if auto_approve else "PENDING"
     topic = execute_returning(
-        """INSERT INTO topics (subject_id, parent_id, title, description, content, sort_order, status, created_by)
+        """INSERT INTO modules (subject_id, parent_id, title, description, content, sort_order, status, created_by)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
         [subject_id, body.get("parent_id"), clean_str(body["title"]),
          clean_str(body.get("description")), body.get("content"),
          body.get("sort_order", 0), status, auth.user_id],
     )
     topic["id"] = str(topic["id"])
-    topic["subTopics"] = []
-    log_action("Added topic", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
+    topic["subModules"] = []
+    log_action("Added module", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(topic)
 
 
-def _update_topic(topic_id: str, body: dict, auth, auto_approve: bool):
-    existing = fetchone("SELECT * FROM topics WHERE id = %s", [topic_id])
+def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
+    existing = fetchone("SELECT * FROM modules WHERE id = %s", [module_id])
     if not existing:
-        return not_found("Topic not found")
+        return not_found("Module not found")
     status = existing["status"]
     if not auto_approve and status == "APPROVED":
         status = "PENDING"
 
     updated = execute_returning(
-        """UPDATE topics SET title = %s, description = %s, content = %s,
+        """UPDATE modules SET title = %s, description = %s, content = %s,
                             sort_order = %s, status = %s
            WHERE id = %s RETURNING *""",
         [clean_str(body.get("title", existing["title"])),
          clean_str(body.get("description", existing.get("description"))),
          body.get("content", existing.get("content")),
          body.get("sort_order", existing["sort_order"]),
-         status, topic_id],
+         status, module_id],
     )
     updated["id"] = str(updated["id"])
-    updated["subTopics"] = _build_topic_tree(str(updated["subject_id"]), updated["id"])
+    updated["subModules"] = _build_module_tree(str(updated["subject_id"]), updated["id"])
     return ok(updated)
 
 
-def _save_topic_tree(subject_id: str, topics: list, parent_id=None):
-    for t in topics:
-        existing = fetchone("SELECT id FROM topics WHERE id = %s", [t.get("id")]) if t.get("id") else None
+def _save_module_tree(subject_id: str, modules: list, parent_id=None):
+    for t in modules:
+        existing = fetchone("SELECT id FROM modules WHERE id = %s", [t.get("id")]) if t.get("id") else None
         if existing:
             execute(
-                "UPDATE topics SET title = %s, description = %s, content = %s, status = 'APPROVED' WHERE id = %s",
+                "UPDATE modules SET title = %s, description = %s, content = %s, status = 'APPROVED' WHERE id = %s",
                 [t.get("title"), t.get("description"), t.get("content"), t["id"]],
             )
         else:
             new_topic = execute_returning(
-                "INSERT INTO topics (subject_id, parent_id, title, description, content, status) VALUES (%s, %s, %s, %s, %s, 'APPROVED') RETURNING id",
+                "INSERT INTO modules (subject_id, parent_id, title, description, content, status) VALUES (%s, %s, %s, %s, %s, 'APPROVED') RETURNING id",
                 [subject_id, parent_id, t.get("title"), t.get("description"), t.get("content")],
             )
             t["id"] = str(new_topic["id"])
-        if t.get("subTopics"):
-            _save_topic_tree(subject_id, t["subTopics"], t["id"])
+        if t.get("subModules"):
+            _save_module_tree(subject_id, t["subModules"], t["id"])
