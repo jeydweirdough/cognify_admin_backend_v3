@@ -23,18 +23,18 @@ VALID_STATUSES = {"DRAFT", "PENDING", "APPROVED", "REJECTED", "REVISION_REQUESTE
 _SELECT = """
     SELECT a.*,
            s.name AS subject_name,
-           t.title AS topic_title,
+           m.title AS module_title,
            u.first_name || ' ' || u.last_name AS author_name
     FROM assessments a
     LEFT JOIN subjects s ON s.id = a.subject_id
-    LEFT JOIN topics t   ON t.id = a.topic_id
+    LEFT JOIN modules m   ON m.id = a.module_id
     LEFT JOIN users u    ON u.id = a.author_id
 """
 
 def _fmt(a: dict, include_questions=False) -> dict:
     a["id"] = str(a["id"])
     if a.get("subject_id"): a["subject_id"] = str(a["subject_id"])
-    if a.get("topic_id"):   a["topic_id"]   = str(a["topic_id"])
+    if a.get("module_id"):  a["module_id"]  = str(a["module_id"])
     if a.get("author_id"):  a["author_id"]  = str(a["author_id"])
     if not include_questions:
         a.pop("questions", None)
@@ -308,13 +308,13 @@ def _create(body: dict, auth, auto_approve: bool):
 
     a = execute_returning(
         """INSERT INTO assessments
-               (title, type, subject_id, topic_id, questions, items, status, author_id)
+               (title, type, subject_id, module_id, questions, items, status, author_id)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
         [
             clean_str(body["title"]),
             atype,
             body.get("subject_id") or None,
-            body.get("topic_id")   or None,
+            body.get("module_id")  or None,
             json.dumps(questions),
             len(questions),
             status,
@@ -336,14 +336,14 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
     questions = body.get("questions", existing["questions"] or [])
     a = execute_returning(
         """UPDATE assessments
-           SET title = %s, type = %s, subject_id = %s, topic_id = %s,
+           SET title = %s, type = %s, subject_id = %s, module_id = %s,
                questions = %s, items = %s, status = %s
            WHERE id = %s RETURNING *""",
         [
             clean_str(body.get("title", existing["title"])),
             (body.get("type", existing["type"]) or "").upper() or existing["type"],
             body.get("subject_id", existing.get("subject_id")),
-            body.get("topic_id",   existing.get("topic_id")),
+            body.get("module_id",  existing.get("module_id")),
             json.dumps(questions),
             len(questions),
             new_status,

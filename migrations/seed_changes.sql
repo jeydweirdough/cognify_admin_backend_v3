@@ -163,7 +163,8 @@ ON CONFLICT (id) DO NOTHING;
 -- ────────────────────────────────────────────────────────────
 -- 9. REQUEST CHANGES (Polymorphic Revision Workflow)
 -- ────────────────────────────────────────────────────────────
-INSERT INTO request_changes (id, target_id, created_by, type, content, revisions_list) VALUES
+INSERT INTO request_changes (id, target_id, created_by, type, content, revisions_list, status, created_at) VALUES
+-- Sample 1: A module revision request
 ('b0000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-000000000002', 'MODULE',
  '{"title": "Neurons and Neural Communication (Updated)", "content": "Updated content: added section on demyelinating diseases such as Multiple Sclerosis."}'::jsonb,
  '[
@@ -172,9 +173,18 @@ INSERT INTO request_changes (id, target_id, created_by, type, content, revisions
       "status": "PENDING", 
       "author_id": "10000000-0000-0000-0000-000000000001"
     }
-  ]'::jsonb
-) ON CONFLICT (id) DO NOTHING;
+  ]'::jsonb, 'PENDING', NOW() - INTERVAL '3 days'
+),
+-- Sample 2: A subject metadata update request
+('b0000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002', 'SUBJECT',
+ '{"action": "UPDATE_METADATA", "name": "General Psychology", "description": "Expanded description covering new topics.", "weight": 25, "passingRate": 80}'::jsonb,
+ NULL, 'PENDING', NOW() - INTERVAL '1 day'
+)
+ON CONFLICT (id) DO NOTHING;
 
+-- ────────────────────────────────────────────────────────────
+-- 10. ACTIVITY LOGS
+-- ────────────────────────────────────────────────────────────
 INSERT INTO activity_logs (id, user_id, action, target, ip_address, created_at) VALUES
 (gen_random_uuid(), '10000000-0000-0000-0000-000000000001', 'User logged in', 'admin@cvsu.edu.ph', '127.0.0.1', NOW() - INTERVAL '2 hours'),
 (gen_random_uuid(), '10000000-0000-0000-0000-000000000002', 'Created new assessment', 'General Psychology — Pre-Assessment', '127.0.0.1', NOW() - INTERVAL '5 hours'),

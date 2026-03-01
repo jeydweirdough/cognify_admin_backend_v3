@@ -73,7 +73,15 @@ def execute_returning(sql, params=None):
 
 def paginate(sql_body, params, page, per_page):
     """Run a count query + paginated query. sql_body must NOT include LIMIT/OFFSET."""
-    count_sql = f"SELECT COUNT(*) AS total FROM ({sql_body}) AS _sub"
+    # Strip trailing ORDER BY before wrapping in a COUNT subquery.
+    # ORDER BY inside a subquery used only for counting is unnecessary and
+    # causes a SyntaxError in some PostgreSQL / psycopg2 configurations.
+    import re as _re
+    count_body = _re.sub(
+        r'\s+ORDER\s+BY\s+.+$', '', sql_body.strip(),
+        flags=_re.IGNORECASE | _re.DOTALL
+    )
+    count_sql = f"SELECT COUNT(*) AS total FROM ({count_body}) AS paged_sub"
     with get_cursor() as cur:
         cur.execute(count_sql, list(params))
         total = cur.fetchone()["total"]

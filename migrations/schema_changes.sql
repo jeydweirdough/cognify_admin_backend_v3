@@ -93,14 +93,16 @@ CREATE INDEX IF NOT EXISTS idx_assessments_status     ON assessments(status);
 CREATE INDEX IF NOT EXISTS idx_assessments_author_id  ON assessments(author_id);
 
 CREATE TABLE IF NOT EXISTS request_changes (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-	target_id UUID NOT NULL,
-	created_by UUID REFERENCES users(id) ON DELETE SET NULL,
-	type VARCHAR(20)  NOT NULL DEFAULT 'SUBJECT',
-	CHECK (type IN ('SUBJECT','ASSESSMENT','QUESTION', 'MODULE')),
-	content JSONB,
-	revisions_list JSONB,
-	CONSTRAINT check_revisions_list_structure CHECK (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    target_id UUID NOT NULL,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    type VARCHAR(20)  NOT NULL DEFAULT 'SUBJECT',
+    CHECK (type IN ('SUBJECT','ASSESSMENT','QUESTION', 'MODULE')),
+    content JSONB,
+    revisions_list JSONB,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',        -- ADDED THIS
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),        -- ADDED THIS
+    CONSTRAINT check_revisions_list_structure CHECK (
         revisions_list IS NULL OR (
             jsonb_typeof(revisions_list) = 'array' AND
             (jsonb_array_length(revisions_list) = 0 OR (
@@ -114,6 +116,7 @@ CREATE TABLE IF NOT EXISTS request_changes (
 
 CREATE INDEX IF NOT EXISTS idx_request_creator ON request_changes(created_by);
 CREATE INDEX IF NOT EXISTS idx_request_type ON request_changes(type);
+CREATE INDEX IF NOT EXISTS idx_request_status ON request_changes(status);
 
 CREATE TABLE IF NOT EXISTS questions (
     id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -185,30 +188,50 @@ GROUP BY
 
 CREATE OR REPLACE VIEW view_change_comparisons AS
 SELECT 
-    rc.id AS request_id,
-    rc.type AS entity_type,
-    rc.target_id AS entity_id,
-    rc.created_by AS requested_by,
-    rc.revisions_list,
+    r.id AS request_id,
+    r.target_id AS entity_id,
+    r.type AS entity_module,
+    r.content AS proposed_data,
+    r.created_by,
+    u.first_name || ' ' || u.last_name AS author_name,
+    r.status,        
+    r.created_at,    
     
-    -- 1. The Proposed Changes (Already JSONB)
-    rc.content AS proposed_data,
-    
-    -- 2. The Original Data (Dynamically converted to JSONB based on the type)
+    -- Dynamically fetch the live data based on the type of change
     CASE 
-        WHEN rc.type = 'SUBJECT' THEN to_jsonb(s.*)
-        WHEN rc.type = 'MODULE' THEN to_jsonb(m.*)
-        WHEN rc.type = 'ASSESSMENT' THEN to_jsonb(a.*)
-        ELSE NULL
-    END AS original_data
+        WHEN r.type = 'MODULE' THEN 
+            jsonb_build_object(
+                'title', m.title,
+                'description', m.description,
+                'content', m.content,
+                'format', m.format,
+                'file_url', m.file_url,
+                'file_name', m.file_name
+            )
+        WHEN r.type = 'SUBJECT' THEN 
+            jsonb_build_object(
+                'name', s.name,
+                'description', s.description,
+                'color', s.color,
+                'weight', s.weight,
+                'passingRate', s.passing_rate
+            )
+        WHEN r.type = 'ASSESSMENT' THEN 
+            jsonb_build_object(
+                'title', a.title,
+                'type', a.type,
+                'items', a.items
+            )
+        ELSE NULL 
+    END AS live_data,
+    
+    COALESCE(m.subject_id, a.subject_id, s.id) AS subject_id
 
-FROM 
-    request_changes rc
--- 3. Left Join all possible tables. 
--- The "ON" clause ensures it only joins if the TYPE and ID both match.
-LEFT JOIN subjects s    ON rc.type = 'SUBJECT'    AND rc.target_id = s.id
-LEFT JOIN modules m     ON rc.type = 'MODULE'     AND rc.target_id = m.id
-LEFT JOIN assessments a ON rc.type = 'ASSESSMENT' AND rc.target_id = a.id;
+FROM request_changes r
+LEFT JOIN users u ON r.created_by = u.id
+LEFT JOIN modules m ON r.target_id = m.id AND r.type = 'MODULE'
+LEFT JOIN subjects s ON r.target_id = s.id AND r.type = 'SUBJECT'
+LEFT JOIN assessments a ON r.target_id = a.id AND r.type = 'ASSESSMENT';
 
 CREATE TABLE IF NOT EXISTS assessment_results (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
