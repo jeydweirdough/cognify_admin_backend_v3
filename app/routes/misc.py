@@ -196,12 +196,38 @@ def _get_verification_queue(user_id=None):
     sql += " ORDER BY created_at DESC"
     queue = fetchall(sql, params)
     
-    # Format UUIDs and dates for React
     for item in queue:
         for key in ["request_id", "entity_id", "created_by", "subject_id"]:
             if item.get(key): item[key] = str(item[key])
         if item.get("created_at"): item["created_at"] = item["created_at"].isoformat()
-        
+
+        # For assessments, enrich live_data with the current questions from the questions table
+        if item.get("entity_module") == "ASSESSMENT" and item.get("entity_id"):
+            questions = fetchall(
+                """SELECT id, text, options, correct_answer
+                   FROM questions
+                   WHERE assessment_id = %s
+                   ORDER BY date_created""",
+                [item["entity_id"]]
+            )
+            normalized = []
+            for q in questions:
+                opts = q.get("options") or []
+                if isinstance(opts, str):
+                    import json as _j
+                    opts = _j.loads(opts)
+                normalized.append({
+                    "id":            str(q["id"]),
+                    "text":          q.get("text", ""),
+                    "options":       opts,
+                    "correctAnswer": q.get("correct_answer", 0),
+                })
+            live_data = item.get("live_data") or {}
+            if isinstance(live_data, str):
+                live_data = json.loads(live_data)
+            live_data["questions"] = normalized
+            item["live_data"] = live_data
+
     return queue
 
 @admin_verify_router.get("")
@@ -232,7 +258,7 @@ async def approve_request_change(request: Request, request_id: str):
     if req["type"] == "SUBJECT" and action == "UPDATE_METADATA":
         execute("""
             UPDATE subjects SET name = COALESCE(%s, name), description = COALESCE(%s, description),
-            color = COALESCE(%s, color), weight = COALESCE(%s, weight), passing_rate = COALESCE(%s, passing_rate)
+            color = COALESCE(%s, color), weight = COALESCE(%s, weight), passing_rate = COALESCE(%s, passing_rate), status = 'APPROVED'
             WHERE id = %s
         """, [changes.get("name"), changes.get("description"), changes.get("color"), changes.get("weight"), changes.get("passingRate"), target_id])
     
@@ -242,18 +268,31 @@ async def approve_request_change(request: Request, request_id: str):
             UPDATE modules SET 
                 title = COALESCE(%s, title), description = COALESCE(%s, description),
                 content = COALESCE(%s, content), format = COALESCE(%s, format),
-                file_url = COALESCE(%s, file_url), file_name = COALESCE(%s, file_name)
+                file_url = COALESCE(%s, file_url), file_name = COALESCE(%s, file_name), status = 'APPROVED'
             WHERE id = %s
         """, [changes.get("title"), changes.get("description"), changes.get("content"), 
               changes.get("format"), changes.get("file_url"), changes.get("file_name"), target_id])
               
-    # 3. Apply Assessment Updates (NEW)
-    elif req["type"] == "ASSESSMENT" and action == "UPDATE_ASSESSMENT":
-        execute("""
-            UPDATE assessments SET 
-                title = COALESCE(%s, title), type = COALESCE(%s, type), items = COALESCE(%s, items)
-            WHERE id = %s
-        """, [changes.get("title"), changes.get("type"), changes.get("items"), target_id])
+    # 3. Apply Assessment Updates
+    elif req["type"] == "ASSESSMENT" and action in {"UPDATE_ASSESSMENT", "CREATE_ASSESSMENT"}:
+        if action == "UPDATE_ASSESSMENT":
+            execute("""
+                UPDATE assessments SET
+                    title = COALESCE(%s, title), type = COALESCE(%s, type),
+                    subject_id = COALESCE(%s::uuid, subject_id),
+                    module_id  = COALESCE(%s::uuid, module_id),
+                    items = COALESCE(%s, items), status = 'APPROVED', updated_at = NOW()
+                WHERE id = %s
+            """, [changes.get("title"), changes.get("type"),
+                  changes.get("subject_id"), changes.get("module_id"),
+                  changes.get("items"), target_id])
+            # Apply questions if they were staged
+            if changes.get("questions"):
+                from app.routes.assessments import _upsert_questions
+                _upsert_questions(target_id, changes["questions"], str(req["created_by"]))
+        else:
+            # CREATE_ASSESSMENT: just approve the status
+            execute("UPDATE assessments SET status = 'APPROVED', updated_at = NOW() WHERE id = %s", [target_id])
 
     # Deletions
     elif req["type"] == "MODULE" and action == "DELETE_MODULE":
@@ -264,12 +303,94 @@ async def approve_request_change(request: Request, request_id: str):
 
     elif req["type"] == "ASSESSMENT" and action == "DELETE_ASSESSMENT":
         execute("DELETE FROM assessments WHERE id = %s", [target_id])
+    else:
+        return error("Unsupported request type or action", 400)
+    
+    execute("UPDATE request_changes SET status = 'APPROVED' WHERE id = %s", [request_id])
+    
 
 @admin_verify_router.post("/requests/{request_id}/reject")
 async def reject_request_change(request: Request, request_id: str):
     auth = login_required(request)
     if auth.role != "ADMIN": return forbidden()
-    
-    execute("UPDATE request_changes SET status = 'REJECTED' WHERE id = %s", [request_id])
+    try: body = await request.json()
+    except Exception: body = {}
+    note = (body.get("note") or body.get("notes") or "").strip()
+
+    req = fetchone("SELECT revisions_list, target_id, type FROM request_changes WHERE id = %s", [request_id])
+    if not req: return not_found("Request not found")
+
+    rev_list = req.get("revisions_list") or []
+    if isinstance(rev_list, str):
+        rev_list = json.loads(rev_list)
+    rev_list.append({"notes": note, "status": "REJECTED", "author_id": auth.user_id})
+
+    execute(
+        "UPDATE request_changes SET status = 'REJECTED', revisions_list = %s WHERE id = %s",
+        [json.dumps(rev_list), request_id]
+    )
+
+    target_id   = str(req["target_id"])
+    entity_type = req["type"]
+    if entity_type == "ASSESSMENT":
+        execute("UPDATE assessments SET status = 'REVISION_REQUESTED', updated_at = NOW() WHERE id = %s", [target_id])
+    elif entity_type == "MODULE":
+        execute("UPDATE modules SET status = 'REJECTED' WHERE id = %s", [target_id])
+    elif entity_type == "SUBJECT":
+        execute("UPDATE subjects SET status = 'REJECTED' WHERE id = %s", [target_id])
+
     log_action("Rejected change request", None, request_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"message": "Request rejected successfully"})
+
+@faculty_rev_router.get("")
+async def list_revisions(request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    page, per_page = get_page_params(request)
+    search = get_search(request)
+    
+    sql = """
+        SELECT r.id, r.target_id, r.type, r.status, r.created_by,
+		r.type,  r.content, r.revisions_list, r.status, r.created_at
+        FROM request_changes r
+        WHERE r.status = 'REJECTED' AND r.created_by = %s
+    """
+    params = [auth.user_id]
+    if search:
+        sql += " AND LOWER(r.category) LIKE LOWER(%s)"
+        params.append(f"%{search}%")
+        
+    sql += " ORDER BY r.created_at DESC"
+    result = paginate(sql, params, page, per_page)
+    
+    for r in result["items"]:
+        r["id"] = str(r["id"])
+        if r.get("target_id"): r["target_id"] = str(r["target_id"])
+        if r.get("created_by"): r["created_by"] = str(r["created_by"])
+        if r.get("created_at"): r["created_at"] = r["created_at"].isoformat()
+        if r.get("revisions_list") is None: r["revisions_list"] = []
+        
+    return ok(result)
+
+@faculty_rev_router.get("/{revision_id}")
+async def get_revision(revision_id: str, request: Request):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+
+    r = fetchone("""
+         SELECT r.id, r.target_id, r.type, r.status, r.created_by,
+		r.type,  r.content, r.revisions_list, r.status, r.created_at
+        FROM request_changes r
+        WHERE r.id = %s AND r.created_by = %s
+    """, [revision_id, auth.user_id])
+
+    if not r:
+        return not_found("Revision not found")
+
+    r["id"] = str(r["id"])
+    if r.get("target_id"): r["target_id"] = str(r["target_id"])
+    if r.get("created_by"): r["created_by"] = str(r["created_by"])
+    if r.get("created_at"): r["created_at"] = r["created_at"].isoformat()
+    if r.get("revisions_list") is None: r["revisions_list"] = []
+
+    return ok(r)

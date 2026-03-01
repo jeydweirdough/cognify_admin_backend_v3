@@ -308,4 +308,21 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     
     formatted = _format_module(updated)
     formatted["subTopics"] = _build_module_tree(str(updated["subject_id"]), formatted["id"], "ADMIN", auth.user_id)
-    return ok(formatted)
+
+# ─── Module lookup by ID (used by RevisionDetail to resolve subject) ──────────
+
+@faculty_subjects_router.get("/modules/{module_id}/resolve")
+async def resolve_module_subject_faculty(request: Request, module_id: str):
+    auth = login_required(request)
+    if auth.role != "FACULTY": return forbidden()
+    m = fetchone("SELECT id, subject_id, title FROM modules WHERE id = %s", [module_id])
+    if not m: return not_found("Module not found")
+    return ok({"module_id": str(m["id"]), "subject_id": str(m["subject_id"]), "title": m["title"]})
+
+@admin_subjects_router.get("/modules/{module_id}/resolve")
+async def resolve_module_subject_admin(request: Request, module_id: str):
+    auth = login_required(request)
+    if auth.role != "ADMIN": return forbidden()
+    m = fetchone("SELECT id, subject_id, title FROM modules WHERE id = %s", [module_id])
+    if not m: return not_found("Module not found")
+    return ok({"module_id": str(m["id"]), "subject_id": str(m["subject_id"]), "title": m["title"]})
