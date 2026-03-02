@@ -52,15 +52,6 @@ def create_app() -> FastAPI:
                 pass
         return await call_next(request)
 
-    # ── Request/response logging ───────────────────────────────────────────────
-    @app.middleware("http")
-    async def log_requests(request: Request, call_next):
-        print(f"\n---> INCOMING: {request.method} {request.url}")
-        response = await call_next(request)
-        print(f"<--- OUTGOING: {request.method} {request.url.path} | Status: {response.status_code}")
-        print("-" * 50)
-        return response
-
     # ── Global error handlers ─────────────────────────────────────────────────
     @app.exception_handler(404)
     async def not_found(_request, _exc):
