@@ -13,7 +13,7 @@ from app.middleware.auth import (
     decode_token, make_access_token, ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH,
     AuthState,
 )
-from app.utils.responses import ok, error, unauthorized, created, not_found
+from app.utils.responses import accout_removed, ok, error, unauthorized, created, not_found
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
 from app.utils.log import log_action
 
@@ -43,8 +43,8 @@ def _do_login(user, allowed_roles: list[str]):
             403,
             errors={"code": "WRONG_APP"},
         )
-    if user["status"] == "DEACTIVATED":
-        return None, unauthorized("Account is deactivated")
+    if user["status"] == "REMOVED":
+        return None, accout_removed("Account is REMOVED")
     if user["status"] == "PENDING":
         return None, unauthorized("Account is pending approval")
 
@@ -273,8 +273,8 @@ def _refresh_token(request: Request):
         "SELECT u.id, u.status, r.name AS role FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = %s",
         [payload["sub"]],
     )
-    if not user or user["status"] == "DEACTIVATED":
-        return unauthorized("User not found or deactivated")
+    if not user or user["status"] == "REMOVED":
+        return unauthorized("User not found or REMOVED")
 
     prod = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")) == "production"
     access = make_access_token(str(user["id"]), user["role"])

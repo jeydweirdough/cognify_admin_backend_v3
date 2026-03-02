@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS users (
     password         VARCHAR(255) NOT NULL,
     role_id          UUID         NOT NULL REFERENCES roles(id),
     status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
-                     CHECK (status IN ('PENDING','ACTIVE','INACTIVE','DEACTIVATED')),
+                     CHECK (status IN ('PENDING','ACTIVE','REMOVED','REMOVED')),
     department       VARCHAR(150),
     last_login       TIMESTAMPTZ,
     date_created     TIMESTAMPTZ  NOT NULL DEFAULT NOW()

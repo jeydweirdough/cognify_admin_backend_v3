@@ -9,6 +9,7 @@ from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import require_fields, clean_str
 from app.utils.log import log_action
 import json
+from psycopg2.extras import Json as PgJson
 
 admin_subjects_router   = APIRouter(prefix="/api/web/admin/subjects",         tags=["admin-subjects"])
 faculty_subjects_router = APIRouter(prefix="/api/web/faculty/subjects",       tags=["faculty-subjects"])
@@ -286,7 +287,7 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
         
         execute(
             "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'MODULE', %s, 'PENDING')",
-            [module_id, auth.user_id, json.dumps(payload)]
+            [module_id, auth.user_id, PgJson(payload)]
         )
         log_action("Submitted module edit for review", payload["title"], module_id, user_id=auth.user_id, ip=auth.ip)
         

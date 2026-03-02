@@ -374,7 +374,7 @@ GET    /api/web/faculty/users/<id>       get student detail
 ```
 ?search=garcia
 ?role=STUDENT              # ADMIN | FACULTY | STUDENT
-?status=ACTIVE             # PENDING | ACTIVE | INACTIVE | DEACTIVATED
+?status=ACTIVE             # PENDING | ACTIVE | REMOVED | REMOVED
 ```
 
 **Create user body (Admin):**
@@ -395,7 +395,7 @@ GET    /api/web/faculty/users/<id>       get student detail
 ```json
 { "status": "ACTIVE" }
 ```
-> Valid statuses: `PENDING` | `ACTIVE` | `INACTIVE` | `DEACTIVATED`
+> Valid statuses: `PENDING` | `ACTIVE` | `REMOVED` | `REMOVED`
 
 **User object (response `data`):**
 ```json

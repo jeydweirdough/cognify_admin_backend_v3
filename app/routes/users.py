@@ -16,7 +16,7 @@ admin_users_router   = APIRouter(prefix="/api/web/admin/users",   tags=["admin-u
 faculty_users_router = APIRouter(prefix="/api/web/faculty/users", tags=["faculty-users"])
 
 VALID_ROLES    = {"ADMIN", "FACULTY", "STUDENT"}
-VALID_STATUSES = {"PENDING", "ACTIVE", "INACTIVE", "DEACTIVATED"}
+VALID_STATUSES = {"PENDING", "ACTIVE", "REMOVED", "REMOVED"}
 
 
 def _fmt(u: dict) -> dict:
@@ -226,6 +226,8 @@ async def faculty_get(request: Request, user_id: str):
 
 
 def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
+    print("Request Content: ", body)
+    
     email = (body.get("email") or existing["email"]).strip().lower()
     if email != existing["email"].lower():
         if not validate_email(email):
@@ -246,23 +248,28 @@ def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
         if pw_err:
             return error(pw_err)
         password = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
+    updated = ''
+    try:
+        updated = execute_returning(
+            """UPDATE users
+            SET cvsu_id = %s, first_name = %s, middle_name = %s, last_name = %s,
+                email = %s, password = %s, role_id = %s,
+                status = %s, department = %s
+            WHERE id = %s
+            RETURNING id, cvsu_id, first_name, last_name, email, status""",
+            [
+                clean_str(body.get("cvsu_id",  existing["cvsu_id"])),
+                clean_str(body.get("first_name",  existing["first_name"])),
+                clean_str(body.get("middle_name", existing.get("middle_name"))),
+                clean_str(body.get("last_name",   existing["last_name"])),
+                email, password, role_id,
+                (body.get("status") or existing["status"]).upper(),
+                clean_str(body.get("department",  existing.get("department"))),
+                user_id,
+            ],
+        )
+    except:
+        return error("ID already in use.")
 
-    updated = execute_returning(
-        """UPDATE users
-           SET first_name = %s, middle_name = %s, last_name = %s,
-               email = %s, password = %s, role_id = %s,
-               status = %s, department = %s
-           WHERE id = %s
-           RETURNING id, first_name, last_name, email, status""",
-        [
-            clean_str(body.get("first_name",  existing["first_name"])),
-            clean_str(body.get("middle_name", existing.get("middle_name"))),
-            clean_str(body.get("last_name",   existing["last_name"])),
-            email, password, role_id,
-            (body.get("status") or existing["status"]).upper(),
-            clean_str(body.get("department",  existing.get("department"))),
-            user_id,
-        ],
-    )
     log_action("Updated user", updated["email"], user_id, user_id=auth.user_id, ip=auth.ip)
     return ok(_fmt(updated))

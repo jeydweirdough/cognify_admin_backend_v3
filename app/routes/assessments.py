@@ -5,6 +5,7 @@ Assessment routes
   Mobile:  /api/mobile/student/assessments — list, fetch, submit
 """
 import json
+from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
 from app.middleware.auth import login_required
@@ -139,12 +140,12 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
         if qid and not qid.startswith("q-") and qid in existing_ids:
             execute(
                 "UPDATE questions SET text = %s, options = %s, correct_answer = %s, last_updated = NOW() WHERE id = %s",
-                [text, json.dumps(options), correct, qid],
+                [text, PgJson(options), correct, qid],
             )
         else:
             execute_returning(
                 "INSERT INTO questions (assessment_id, author_id, text, options, correct_answer) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                [assess_id, author_id, text, json.dumps(options), correct],
+                [assess_id, author_id, text, PgJson(options), correct],
             )
 
 
@@ -227,14 +228,14 @@ async def admin_update_status(request: Request, assess_id: str):
             rev_list.append(revision_entry)
             execute(
                 "UPDATE request_changes SET revisions_list = %s WHERE id = %s",
-                [json.dumps(rev_list), str(existing_req["id"])]
+                [PgJson(rev_list), str(existing_req["id"])]
             )
         else:
             execute(
                 "INSERT INTO request_changes (target_id, created_by, type, content, revisions_list, status) VALUES (%s, %s, 'ASSESSMENT', %s, %s, 'PENDING')",
                 [assess_id, auth.user_id,
-                 json.dumps({"action": "REVISION_REQUESTED", "title": a["title"]}),
-                 json.dumps([revision_entry])]
+                 PgJson({"action": "REVISION_REQUESTED", "title": a["title"]}),
+                 PgJson([revision_entry])]
             )
     elif action in {"APPROVED", "REJECTED"}:
         execute(
@@ -326,13 +327,13 @@ async def faculty_update(request: Request, assess_id: str):
     if existing_req:
         execute(
             "UPDATE request_changes SET content = %s WHERE id = %s",
-            [json.dumps(payload), str(existing_req["id"])]
+            [PgJson(payload), str(existing_req["id"])]
         )
         change_id = str(existing_req["id"])
     else:
         change = execute_returning(
             "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING') RETURNING id",
-            [assess_id, auth.user_id, json.dumps(payload)]
+            [assess_id, auth.user_id, PgJson(payload)]
         )
         change_id = str(change["id"])
 
@@ -365,7 +366,7 @@ async def faculty_submit(request: Request, assess_id: str):
     if not existing_req:
         execute(
             "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING')",
-            [assess_id, auth.user_id, json.dumps({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
+            [assess_id, auth.user_id, PgJson({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
         )
 
     log_action("Submitted assessment for review", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
@@ -503,7 +504,7 @@ def _create(body: dict, auth, auto_approve: bool):
     if not auto_approve and status == "PENDING":
         execute(
             "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING')",
-            [assess_id, auth.user_id, json.dumps({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
+            [assess_id, auth.user_id, PgJson({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
         )
 
     log_action("Created assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
@@ -550,7 +551,7 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
         if not existing_req:
             execute(
                 "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING')",
-                [assess_id, auth.user_id, json.dumps({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
+                [assess_id, auth.user_id, PgJson({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
             )
 
     log_action("Updated assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)

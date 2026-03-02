@@ -59,6 +59,9 @@ def not_found(message="Resource not found"):
 def unauthorized(message="Unauthorized"):
     return error(message, 401)
 
+def accout_removed(message="Account Removed"):
+    return error(message, 501)
+
 def forbidden(message="Forbidden"):
     return error(message, 403)
 

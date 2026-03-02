@@ -8,6 +8,7 @@ Miscellaneous web routes:
   /api/web/admin/revisions      → revision management
 """
 import json
+from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
 from app.middleware.auth import login_required
@@ -133,7 +134,7 @@ async def create_role(request: Request):
     permissions = body.get("permissions", [])
     r = execute_returning(
         "INSERT INTO roles (name, permissions, is_system) VALUES (%s, %s, FALSE) RETURNING *",
-        [name, json.dumps(permissions)]
+        [name, PgJson(permissions)]
     )
     r["id"] = str(r["id"])
     r["created_at"] = r["created_at"].isoformat() if r.get("created_at") else None
@@ -158,7 +159,7 @@ async def update_role(request: Request, role_id: str):
 
     r = execute_returning(
         "UPDATE roles SET name = %s, permissions = %s WHERE id = %s RETURNING *",
-        [new_name, json.dumps(body.get("permissions", existing["permissions"])), role_id]
+        [new_name, PgJson(body.get("permissions") if body.get("permissions") is not None else existing["permissions"]), role_id]
     )
     r["id"] = str(r["id"])
     r["created_at"] = r["created_at"].isoformat() if r.get("created_at") else None
@@ -327,7 +328,7 @@ async def reject_request_change(request: Request, request_id: str):
 
     execute(
         "UPDATE request_changes SET status = 'REJECTED', revisions_list = %s WHERE id = %s",
-        [json.dumps(rev_list), request_id]
+        [PgJson(rev_list), request_id]
     )
 
     target_id   = str(req["target_id"])
