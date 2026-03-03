@@ -4,7 +4,7 @@ Editing is handled within subjects.py via the Curriculum Builder.
 """
 from fastapi import APIRouter, Request
 from app.db import fetchall, paginate
-from app.middleware.auth import login_required
+from app.middleware.auth import login_required, permission_required
 from app.utils.responses import ok, forbidden
 from app.utils.pagination import get_page_params, get_search
 
@@ -48,14 +48,12 @@ def _list_all_modules(request: Request, role: str, user_id: str = None):
 
 @admin_content_router.get("")
 async def admin_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_content")(request)
     return ok(_list_all_modules(request, "ADMIN"))
 
 @faculty_content_router.get("")
 async def faculty_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_content")(request)
     return ok(_list_all_modules(request, "FACULTY", auth.user_id))
     
 @mobile_content_router.get("")

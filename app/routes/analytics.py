@@ -1,7 +1,7 @@
 import datetime
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, paginate
-from app.middleware.auth import login_required
+from app.middleware.auth import login_required, permission_required
 from app.utils.responses import ok, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search
 import uuid
@@ -16,8 +16,7 @@ mobile_prog_router  = APIRouter(prefix="/api/mobile/student",    tags=["mobile-p
 
 @admin_dash_router.get("/dashboard")
 async def admin_dashboard(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_admin_dashboard")(request)
 
     # 1. Fetch all core stats instantly from our optimized PostgreSQL View
     stats = fetchone("SELECT * FROM view_admin_dashboard_stats")
@@ -65,8 +64,7 @@ async def admin_dashboard(request: Request):
 
 @faculty_dash_router.get("/dashboard")
 async def faculty_dashboard(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_faculty_dashboard")(request)
 
     my_modules   = fetchone("SELECT COUNT(*) AS c FROM modules WHERE created_by = %s", [auth.user_id])
     pending_mod  = fetchone("SELECT COUNT(*) AS c FROM modules WHERE created_by = %s AND status = 'PENDING'", [auth.user_id])
@@ -301,18 +299,15 @@ def _analytics_list(request: Request):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _shared_cohort_analytics(request: Request):
-    auth = login_required(request)
-    if auth.role not in ["ADMIN", "FACULTY"]: return forbidden()
+    auth = permission_required("view_analytics")(request)
     return ok(_cohort_analytics_data())
 
 async def _shared_analytics_list(request: Request):
-    auth = login_required(request)
-    if auth.role not in ["ADMIN", "FACULTY"]: return forbidden()
+    auth = permission_required("view_analytics")(request)
     return ok(_analytics_list(request))
 
 async def _shared_analytics_detail(request: Request, student_id: str):
-    auth = login_required(request)
-    if auth.role not in ["ADMIN", "FACULTY"]: return forbidden()
+    auth = permission_required("view_student_analytics")(request)
     record = _student_full_record(student_id)
     return ok(record) if record else not_found("Student not found")
 

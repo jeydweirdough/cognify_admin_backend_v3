@@ -129,3 +129,45 @@ class _HTTPException(Exception):
 
 def _http_exc(response: JSONResponse) -> _HTTPException:
     return _HTTPException(response)
+
+
+def permission_required(permission_id: str):
+    """
+    Route-level permission guard based on the DB roles.permissions JSON array.
+
+    ADMIN role always bypasses all permission checks (system-level bypass).
+    All other roles must have the specific permission_id in their role's
+    permissions array (stored in the roles table).
+
+    Usage:
+        auth = permission_required("edit_subjects")(request)
+        auth = permission_required("approve_verification")(request)
+
+    This replaces scattered  `if auth.role != "ADMIN": return forbidden()`
+    checks with a single declarative guard that works for ANY custom role.
+    """
+    def check(request: Request) -> AuthState:
+        from app.db import fetchone as _fetchone
+        auth = login_required(request)
+
+        # ADMIN role has a full system-level bypass — never blocked
+        if auth.role == "ADMIN":
+            return auth
+
+        # Fetch the permissions array for this user's assigned role
+        row = _fetchone(
+            """SELECT r.permissions
+               FROM users u
+               JOIN roles r ON u.role_id = r.id
+               WHERE u.id = %s""",
+            [auth.user_id],
+        )
+        if not row:
+            raise _http_exc(forbidden("Role not found for user"))
+
+        perms = row.get("permissions") or []
+        if permission_id not in perms:
+            raise _http_exc(forbidden(f"Missing permission: {permission_id}"))
+
+        return auth
+    return check

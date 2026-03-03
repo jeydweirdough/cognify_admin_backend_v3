@@ -259,6 +259,17 @@ async def mobile_me(request: Request):
     return _me(auth)
 
 
+@web_auth_router.get("/sync-permissions")
+async def web_sync_permissions(request: Request):
+    """
+    Re-fetches the authenticated user's current role + permissions from the DB.
+    Called by the frontend after any role permission update so active sessions
+    pick up the change immediately — no logout/login required.
+    """
+    auth = login_required(request)
+    return _me(auth)
+
+
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
 def _refresh_token(request: Request):

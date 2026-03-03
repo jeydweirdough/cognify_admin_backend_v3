@@ -8,7 +8,7 @@ import json
 from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required
+from app.middleware.auth import login_required, permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import require_fields, clean_str
@@ -162,23 +162,20 @@ def _fetch_with_questions(assess_id: str):
 
 @admin_assess_router.get("")
 async def admin_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_assessments")(request)
     return ok(_list(request))
 
 
 @admin_assess_router.get("/{assess_id}")
 async def admin_get(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_assessments")(request)
     a = _fetch_with_questions(assess_id)
     return ok(_fmt(a, include_questions=True)) if a else not_found()
 
 
 @admin_assess_router.post("")
 async def admin_create(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("create_assessments")(request)
     try: body = await request.json()
     except Exception: body = {}
     return _create(body, auth, auto_approve=True)
@@ -186,8 +183,7 @@ async def admin_create(request: Request):
 
 @admin_assess_router.put("/{assess_id}")
 async def admin_update(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("edit_assessments")(request)
     try: body = await request.json()
     except Exception: body = {}
     # When admin approves a request_change, mark it approved in the table
@@ -204,8 +200,7 @@ async def admin_update(request: Request, assess_id: str):
 
 @admin_assess_router.patch("/{assess_id}/status")
 async def admin_update_status(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("approve_verification")(request)
     try: body = await request.json()
     except Exception: body = {}
     action = (body.get("status") or "").upper()
@@ -250,8 +245,7 @@ async def admin_update_status(request: Request, assess_id: str):
 
 @admin_assess_router.delete("/{assess_id}")
 async def admin_delete(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("delete_assessments")(request)
     return _delete(assess_id, auth, only_own=False)
 
 
@@ -261,15 +255,13 @@ async def admin_delete(request: Request, assess_id: str):
 
 @faculty_assess_router.get("")
 async def faculty_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_assessments")(request)
     return ok(_list(request, "AND (a.author_id = %s OR a.status = 'APPROVED')", [auth.user_id]))
 
 
 @faculty_assess_router.get("/{assess_id}")
 async def faculty_get(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_assessments")(request)
     a = fetchone(
         _SELECT_WITH_Q + "WHERE a.id = %s AND (a.author_id = %s OR a.status = 'APPROVED') GROUP BY a.id, s.name, m.title, u.first_name, u.last_name",
         [assess_id, auth.user_id]
@@ -279,8 +271,7 @@ async def faculty_get(request: Request, assess_id: str):
 
 @faculty_assess_router.post("")
 async def faculty_create(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("create_assessments")(request)
     try: body = await request.json()
     except Exception: body = {}
     return _create(body, auth, auto_approve=False)
@@ -292,8 +283,7 @@ async def faculty_update(request: Request, assess_id: str):
     DRAFT -> write directly.
     APPROVED / REVISION_REQUESTED -> stage into request_changes for admin review.
     """
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("edit_assessments")(request)
     existing = fetchone("SELECT * FROM assessments WHERE id = %s", [assess_id])
     if not existing: return not_found()
     if str(existing["author_id"]) != auth.user_id:
@@ -349,8 +339,7 @@ async def faculty_update(request: Request, assess_id: str):
 @faculty_assess_router.patch("/{assess_id}/submit")
 async def faculty_submit(request: Request, assess_id: str):
     """Submit a DRAFT or REVISION_REQUESTED assessment for admin review."""
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("edit_assessments")(request)
     a = fetchone("SELECT id, title, author_id, status FROM assessments WHERE id = %s", [assess_id])
     if not a: return not_found()
     if str(a["author_id"]) != auth.user_id: return forbidden()
@@ -375,8 +364,7 @@ async def faculty_submit(request: Request, assess_id: str):
 
 @faculty_assess_router.delete("/{assess_id}")
 async def faculty_delete(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("delete_assessments")(request)
     return _delete(assess_id, auth, only_own=True)
 
 

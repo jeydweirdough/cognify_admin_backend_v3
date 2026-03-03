@@ -328,3 +328,32 @@ BEGIN
         AND u.status = 'ACTIVE'; -- Prevent pending/removed users from logging in
 END;
 $$ LANGUAGE plpgsql;
+-- ── Whitelist table (pre-registration approval list) ─────────────────────────
+-- This table stores entries added by admins/faculty BEFORE a user registers.
+-- On registration, auth.py checks this table and marks status='REGISTERED'.
+CREATE TABLE IF NOT EXISTS whitelist (
+    id               UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    first_name       VARCHAR(100) NOT NULL,
+    middle_name      VARCHAR(100),
+    last_name        VARCHAR(100) NOT NULL,
+    institutional_id VARCHAR(100) NOT NULL,
+    email            VARCHAR(255) NOT NULL UNIQUE,
+    role             VARCHAR(20)  NOT NULL DEFAULT 'STUDENT'
+                     CHECK (role IN ('STUDENT', 'FACULTY', 'ADMIN')),
+    status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                     CHECK (status IN ('PENDING', 'REGISTERED')),
+    added_by         UUID         REFERENCES users(id) ON DELETE SET NULL,
+    date_added       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whitelist_email  ON whitelist(LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_whitelist_status ON whitelist(status);
+CREATE INDEX IF NOT EXISTS idx_whitelist_role   ON whitelist(role);
+
+-- Backfill: grant granular whitelist permissions to existing roles that have the
+-- legacy 'manage_whitelist' permission so the new permission_required() guards work.
+UPDATE roles
+SET permissions = permissions
+    || '["manage_whitelist_all", "manage_whitelist_students", "view_whitelist"]'::jsonb
+WHERE permissions @> '"manage_whitelist"'
+  AND NOT (permissions @> '"manage_whitelist_all"');

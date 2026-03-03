@@ -11,7 +11,7 @@ import json
 from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required
+from app.middleware.auth import login_required, permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden, conflict
 from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import require_fields, clean_str
@@ -31,8 +31,7 @@ faculty_rev_router    = APIRouter(prefix="/api/web/faculty/revisions",    tags=[
 
 @settings_router.get("")
 async def get_settings(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_settings")(request)
     s = fetchone("SELECT * FROM system_settings WHERE id = 1")
     if s:
         s["id"] = str(s["id"])
@@ -40,8 +39,7 @@ async def get_settings(request: Request):
 
 @settings_router.put("")
 async def update_settings(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("edit_settings")(request)
     try: body = await request.json()
     except Exception: body = {}
     
@@ -75,8 +73,7 @@ async def update_settings(request: Request):
 
 @admin_logs_router.get("")
 async def list_logs(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_logs")(request)
     page, per_page = get_page_params(request)
     search = get_search(request)
     
@@ -108,8 +105,7 @@ async def list_logs(request: Request):
 
 @roles_router.get("")
 async def list_roles(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_roles")(request)
     roles = fetchall("SELECT * FROM roles ORDER BY name")
     for r in roles:
         r["id"] = str(r["id"])
@@ -119,8 +115,7 @@ async def list_roles(request: Request):
 
 @roles_router.post("")
 async def create_role(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_roles")(request)
     try: body = await request.json()
     except Exception: body = {}
 
@@ -144,8 +139,7 @@ async def create_role(request: Request):
 
 @roles_router.put("/{role_id}")
 async def update_role(request: Request, role_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_roles")(request)
     existing = fetchone("SELECT * FROM roles WHERE id = %s", [role_id])
     if not existing: return not_found()
 
@@ -169,8 +163,7 @@ async def update_role(request: Request, role_id: str):
 
 @roles_router.delete("/{role_id}")
 async def delete_role(request: Request, role_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_roles")(request)
     existing = fetchone("SELECT * FROM roles WHERE id = %s", [role_id])
     if not existing: return not_found()
     if existing["is_system"]:
@@ -233,20 +226,17 @@ def _get_verification_queue(user_id=None):
 
 @admin_verify_router.get("")
 async def admin_get_queue(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_verification")(request)
     return ok(_get_verification_queue())
 
 @faculty_verify_router.get("")
 async def faculty_get_queue(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_verification")(request)
     return ok(_get_verification_queue(auth.user_id))
 
 @admin_verify_router.post("/requests/{request_id}/approve")
 async def approve_request_change(request: Request, request_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("approve_verification")(request)
     
     req = fetchone("SELECT * FROM request_changes WHERE id = %s AND status = 'PENDING'", [request_id])
     if not req: return not_found("Pending request not found")
@@ -312,8 +302,7 @@ async def approve_request_change(request: Request, request_id: str):
 
 @admin_verify_router.post("/requests/{request_id}/reject")
 async def reject_request_change(request: Request, request_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("approve_verification")(request)
     try: body = await request.json()
     except Exception: body = {}
     note = (body.get("note") or body.get("notes") or "").strip()
@@ -345,8 +334,7 @@ async def reject_request_change(request: Request, request_id: str):
 
 @faculty_rev_router.get("")
 async def list_revisions(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_revisions")(request)
     page, per_page = get_page_params(request)
     search = get_search(request)
     
@@ -375,8 +363,7 @@ async def list_revisions(request: Request):
 
 @faculty_rev_router.get("/{revision_id}")
 async def get_revision(revision_id: str, request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_revisions")(request)
 
     r = fetchone("""
          SELECT r.id, r.target_id, r.type, r.status, r.created_by,

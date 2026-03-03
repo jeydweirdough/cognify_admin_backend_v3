@@ -6,7 +6,7 @@ User management routes
 import bcrypt
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, AuthState
+from app.middleware.auth import login_required, permission_required, AuthState
 from app.utils.responses import ok, created, no_content, error, not_found, conflict, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
@@ -73,15 +73,13 @@ def _list_users(request: Request, role_lock: str = None):
 
 @admin_users_router.get("")
 async def admin_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_users")(request)
     return ok(_list_users(request))
 
 
 @admin_users_router.get("/pending")
 async def admin_pending(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_users")(request)
     page, per_page = get_page_params(request)
     sql = """
         SELECT u.*, r.name AS role, r.id AS role_id
@@ -96,8 +94,7 @@ async def admin_pending(request: Request):
 
 @admin_users_router.get("/{user_id}")
 async def admin_get(request: Request, user_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_users")(request)
     u = fetchone(
         "SELECT u.*, r.name AS role, r.id AS role_id FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = %s",
         [user_id]
@@ -108,8 +105,7 @@ async def admin_get(request: Request, user_id: str):
 
 @admin_users_router.post("")
 async def admin_create(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("create_users")(request)
     try:
         body = await request.json()
     except Exception:
@@ -157,8 +153,7 @@ async def admin_create(request: Request):
 
 @admin_users_router.put("/{user_id}")
 async def admin_update(request: Request, user_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("edit_users")(request)
     existing = fetchone("SELECT * FROM users WHERE id = %s", [user_id])
     if not existing: return not_found()
     try:
@@ -170,8 +165,7 @@ async def admin_update(request: Request, user_id: str):
 
 @admin_users_router.patch("/{user_id}/status")
 async def admin_update_status(request: Request, user_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("edit_users")(request)
     try:
         body = await request.json()
     except Exception:
@@ -190,8 +184,7 @@ async def admin_update_status(request: Request, user_id: str):
 
 @admin_users_router.delete("/{user_id}")
 async def admin_delete(request: Request, user_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("delete_users")(request)
     existing = fetchone("SELECT email FROM users WHERE id = %s", [user_id])
     if not existing: return not_found()
     if user_id == auth.user_id:
@@ -207,15 +200,13 @@ async def admin_delete(request: Request, user_id: str):
 
 @faculty_users_router.get("")
 async def faculty_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_students")(request)
     return ok(_list_users(request, role_lock="STUDENT"))
 
 
 @faculty_users_router.get("/{user_id}")
 async def faculty_get(request: Request, user_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_students")(request)
     u = fetchone(
         """SELECT u.*, r.name AS role FROM users u JOIN roles r ON u.role_id = r.id
            WHERE u.id = %s AND r.name = 'STUDENT'""",

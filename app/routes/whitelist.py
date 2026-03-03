@@ -13,7 +13,7 @@ Whitelist routes — shows users with status = 'PENDING'
 import csv, io, json
 from fastapi import APIRouter, Request
 from app.db import fetchone, execute, execute_returning, paginate
-from app.middleware.auth import login_required
+from app.middleware.auth import login_required, permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, conflict, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import validate_email, require_fields, clean_str
@@ -98,35 +98,46 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
     if role not in VALID_ROLES:
         return error(f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
 
-    if fetchone("SELECT id FROM users WHERE status = 'PENDING' AND LOWER(email) = %s", [email]):
-        return conflict("Email already whitelisted")
-
     if fetchone("SELECT id FROM users WHERE LOWER(email) = %s", [email]):
-        return conflict("Email already belongs to a registered user")
+        return conflict("Email already exists (pending or registered)")
+
+    # Resolve the role_id from the roles table
+    role_row = fetchone("SELECT id FROM roles WHERE name = %s", [role])
+    if not role_row:
+        return error(f"Role '{role}' not found in roles table. Ensure the role exists.", 400)
+
+    # Pre-registration entries are inserted as PENDING users with a placeholder password.
+    # They cannot log in until they complete registration (which sets a real password + ACTIVE status).
+    import bcrypt as _bcrypt
+    placeholder_pw = _bcrypt.hashpw(b"__PENDING_REGISTRATION__", _bcrypt.gensalt()).decode()
 
     entry = execute_returning(
-        """INSERT INTO whitelist
-               (first_name, middle_name, last_name, institutional_id, email, role, added_by)
-           VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """INSERT INTO users
+               (first_name, middle_name, last_name, institutional_id, email, password, role_id, status)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
            RETURNING *""",
         [
             clean_str(body["first_name"]),
             clean_str(body.get("middle_name")),
             clean_str(body["last_name"]),
             clean_str(body["institutional_id"]),
-            email, role, added_by,
+            email,
+            placeholder_pw,
+            role_row["id"],
         ],
     )
     log_action("Whitelist entry added", email, str(entry["id"]), user_id=added_by, ip=ip)
-    return created(_fmt_wl(entry))
+    return created(_fmt_user(entry))
 
 
 def _update_entry(entry_id: str, body: dict, auth, role_lock: str = None):
-    existing = fetchone("SELECT * FROM users WHERE status = 'PENDING' AND id = %s", [entry_id])
+    existing = fetchone("""
+        SELECT u.*, r.name AS role
+        FROM users u JOIN roles r ON u.role_id = r.id
+        WHERE u.status = 'PENDING' AND u.id = %s
+    """, [entry_id])
     if not existing:
         return not_found("Whitelist entry not found")
-    if existing["status"] == "REGISTERED":
-        return error("This entry has already been used for registration.", 409)
 
     new_email = body.get("email", existing["email"]).strip().lower()
     if new_email != existing["email"].lower():
@@ -134,27 +145,33 @@ def _update_entry(entry_id: str, body: dict, auth, role_lock: str = None):
             return error("Invalid email address")
         if fetchone("SELECT id FROM users WHERE status = 'PENDING' AND LOWER(email) = %s AND id != %s", [new_email, entry_id]):
             return conflict("Email already whitelisted")
-        if fetchone("SELECT id FROM users WHERE LOWER(email) = %s", [new_email]):
+        if fetchone("SELECT id FROM users WHERE LOWER(email) = %s AND id != %s", [new_email, entry_id]):
             return conflict("Email already belongs to a registered user")
 
-    new_role = (role_lock or body.get("role") or existing["role"]).upper()
+    # Resolve role_id for the new role name
+    new_role_name = (role_lock or body.get("role") or existing["role"]).upper()
+    role_row = fetchone("SELECT id FROM roles WHERE name = %s", [new_role_name])
+    if not role_row:
+        return error(f"Role '{new_role_name}' not found", 400)
 
     updated = execute_returning(
-        """UPDATE whitelist
+        """UPDATE users
            SET first_name = %s, middle_name = %s, last_name = %s,
-               institutional_id = %s, email = LOWER(%s), role = %s
-           WHERE id = %s
+               institutional_id = %s, email = LOWER(%s), role_id = %s
+           WHERE id = %s AND status = 'PENDING'
            RETURNING *""",
         [
             clean_str(body.get("first_name",      existing["first_name"])),
             clean_str(body.get("middle_name",      existing.get("middle_name"))),
             clean_str(body.get("last_name",        existing["last_name"])),
-            clean_str(body.get("institutional_id", existing["institutional_id"])),
-            new_email, new_role, entry_id,
+            clean_str(body.get("institutional_id", existing.get("institutional_id") or existing.get("cvsu_id") or "")),
+            new_email, role_row["id"], entry_id,
         ],
     )
+    if not updated:
+        return not_found("Entry not found or already processed")
     log_action("Whitelist entry updated", updated["email"], entry_id, user_id=auth.user_id, ip=auth.ip)
-    return ok(_fmt_wl(updated))
+    return ok(_fmt_user(updated))
 
 
 def _delete_entry(entry_id: str, auth):
@@ -174,15 +191,13 @@ def _delete_entry(entry_id: str, auth):
 
 @admin_whitelist_router.get("")
 async def admin_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_whitelist")(request)
     return ok(_apply_fmt(_list_pending(request)))
 
 
 @admin_whitelist_router.post("")
 async def admin_add(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_whitelist_all")(request)
     try:
         body = await request.json()
     except Exception:
@@ -192,8 +207,7 @@ async def admin_add(request: Request):
 
 @admin_whitelist_router.post("/bulk")
 async def admin_bulk(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_whitelist_all")(request)
 
     content_type = request.headers.get("content-type", "")
     records = []
@@ -236,8 +250,7 @@ async def admin_bulk(request: Request):
 
 @admin_whitelist_router.put("/{entry_id}")
 async def admin_update(request: Request, entry_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_whitelist_all")(request)
     try:
         body = await request.json()
     except Exception:
@@ -247,8 +260,7 @@ async def admin_update(request: Request, entry_id: str):
 
 @admin_whitelist_router.delete("/{entry_id}")
 async def admin_delete(request: Request, entry_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("manage_whitelist_all")(request)
     return _delete_entry(entry_id, auth)
 
 
@@ -258,15 +270,13 @@ async def admin_delete(request: Request, entry_id: str):
 
 @faculty_whitelist_router.get("")
 async def faculty_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_whitelist")(request)
     return ok(_apply_fmt(_list_pending(request, role_lock="STUDENT")))
 
 
 @faculty_whitelist_router.post("")
 async def faculty_add(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("manage_whitelist_students")(request)
     try:
         body = await request.json()
     except Exception:
@@ -276,11 +286,14 @@ async def faculty_add(request: Request):
 
 @faculty_whitelist_router.put("/{entry_id}")
 async def faculty_update(request: Request, entry_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
-    existing = fetchone("SELECT role FROM users WHERE status = 'PENDING' AND id = %s", [entry_id])
+    auth = permission_required("manage_whitelist_students")(request)
+    existing = fetchone("""
+        SELECT u.*, r.name AS role
+        FROM users u JOIN roles r ON u.role_id = r.id
+        WHERE u.status = 'PENDING' AND u.id = %s
+    """, [entry_id])
     if not existing: return not_found("Whitelist entry not found")
-    if existing["role"] != "STUDENT": return forbidden()
+    if existing["role"].upper() != "STUDENT": return forbidden("Faculty can only edit student entries")
     try:
         body = await request.json()
     except Exception:
@@ -290,9 +303,12 @@ async def faculty_update(request: Request, entry_id: str):
 
 @faculty_whitelist_router.delete("/{entry_id}")
 async def faculty_delete(request: Request, entry_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
-    existing = fetchone("SELECT role FROM users WHERE status = 'PENDING' AND id = %s", [entry_id])
+    auth = permission_required("manage_whitelist_students")(request)
+    existing = fetchone("""
+        SELECT u.*, r.name AS role
+        FROM users u JOIN roles r ON u.role_id = r.id
+        WHERE u.status = 'PENDING' AND u.id = %s
+    """, [entry_id])
     if not existing: return not_found("Whitelist entry not found")
-    if existing["role"] != "STUDENT": return forbidden()
+    if existing["role"].upper() != "STUDENT": return forbidden("Faculty can only delete student entries")
     return _delete_entry(entry_id, auth)

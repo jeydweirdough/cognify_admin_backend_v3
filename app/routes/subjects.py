@@ -3,7 +3,7 @@ Subjects routes - Admin, Faculty, and Mobile (Student)
 """
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required
+from app.middleware.auth import login_required, permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import require_fields, clean_str
@@ -116,21 +116,18 @@ def _list_subjects(request: Request, role: str):
 
 @admin_subjects_router.get("")
 async def admin_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_subjects")(request)
     return ok(_list_subjects(request, "ADMIN"))
 
 @admin_subjects_router.get("/{subject_id}")
 async def admin_get(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_subjects")(request)
     s = _get_subject_tree(subject_id, "ADMIN", auth.user_id)
     return ok(s) if s else not_found()
 
 @admin_subjects_router.post("")
 async def admin_create(request: Request):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("create_subjects")(request)
     try: body = await request.json()
     except Exception: body = {}
     
@@ -145,8 +142,7 @@ async def admin_create(request: Request):
 
 @admin_subjects_router.put("/{subject_id}")
 async def admin_update(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("edit_subjects")(request)
     s = fetchone("SELECT * FROM subjects WHERE id = %s", [subject_id])
     if not s: return not_found()
     try: body = await request.json()
@@ -164,8 +160,7 @@ async def admin_update(request: Request, subject_id: str):
 
 @admin_subjects_router.delete("/{subject_id}")
 async def admin_delete(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("delete_subjects")(request)
     s = fetchone("SELECT name FROM subjects WHERE id = %s", [subject_id])
     if not s: return not_found()
     execute("DELETE FROM subjects WHERE id = %s", [subject_id])
@@ -174,24 +169,21 @@ async def admin_delete(request: Request, subject_id: str):
 
 @admin_subjects_router.post("/{subject_id}/modules")
 async def admin_add_module(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("create_content")(request)
     try: body = await request.json()
     except Exception: body = {}
     return _add_module(subject_id, body, auth, auto_approve=True)
 
 @admin_subjects_router.put("/{subject_id}/modules/{module_id}")
 async def admin_update_module(request: Request, subject_id: str, module_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("edit_content")(request)
     try: body = await request.json()
     except Exception: body = {}
     return _update_module(module_id, body, auth, auto_approve=True)
 
 @admin_subjects_router.delete("/{subject_id}/modules/{module_id}")
 async def admin_delete_module(request: Request, subject_id: str, module_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("delete_content")(request)
     execute("DELETE FROM modules WHERE id = %s AND subject_id = %s", [module_id, subject_id])
     return no_content()
 
@@ -201,37 +193,32 @@ async def admin_delete_module(request: Request, subject_id: str, module_id: str)
 
 @faculty_subjects_router.get("")
 async def faculty_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_subjects")(request)
     return ok(_list_subjects(request, "FACULTY"))
 
 @faculty_subjects_router.get("/{subject_id}")
 async def faculty_get(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_subjects")(request)
     s = _get_subject_tree(subject_id, "FACULTY", auth.user_id)
     return ok(s) if s else not_found()
 
 @faculty_subjects_router.post("/{subject_id}/modules")
 async def faculty_add_module(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("create_content")(request)
     try: body = await request.json()
     except Exception: body = {}
     return _add_module(subject_id, body, auth, auto_approve=False)
 
 @faculty_subjects_router.put("/{subject_id}/modules/{module_id}")
 async def faculty_update_module(request: Request, subject_id: str, module_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("edit_content")(request)
     try: body = await request.json()
     except Exception: body = {}
     return _update_module(module_id, body, auth, auto_approve=False)
 
 @faculty_subjects_router.post("/{subject_id}/submit-change")
 async def faculty_submit_change(request: Request, subject_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("edit_subjects")(request)
     if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
         return not_found()
     try: body = await request.json()
@@ -314,16 +301,14 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
 
 @faculty_subjects_router.get("/modules/{module_id}/resolve")
 async def resolve_module_subject_faculty(request: Request, module_id: str):
-    auth = login_required(request)
-    if auth.role != "FACULTY": return forbidden()
+    auth = permission_required("view_subjects")(request)
     m = fetchone("SELECT id, subject_id, title FROM modules WHERE id = %s", [module_id])
     if not m: return not_found("Module not found")
     return ok({"module_id": str(m["id"]), "subject_id": str(m["subject_id"]), "title": m["title"]})
 
 @admin_subjects_router.get("/modules/{module_id}/resolve")
 async def resolve_module_subject_admin(request: Request, module_id: str):
-    auth = login_required(request)
-    if auth.role != "ADMIN": return forbidden()
+    auth = permission_required("view_subjects")(request)
     m = fetchone("SELECT id, subject_id, title FROM modules WHERE id = %s", [module_id])
     if not m: return not_found("Module not found")
     return ok({"module_id": str(m["id"]), "subject_id": str(m["subject_id"]), "title": m["title"]})
