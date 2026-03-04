@@ -51,15 +51,15 @@ INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
 (
   '00000000-0000-0000-0000-000000000002',
   'FACULTY',
-  '["view_dashboard","view_subjects","edit_subjects","view_content","create_content","edit_content","verify_resources","view_assessments","create_assessments","edit_assessments","view_revisions","view_analytics","view_student_analytics","view_whitelist","manage_whitelist"]'::jsonb,
+  '["view_dashboard","view_subjects","edit_subjects","view_content","create_content","edit_content","verify_resources","view_assessments","create_assessments","edit_assessments","view_revisions","view_analytics","view_student_analytics","view_whitelist","manage_whitelist","can_signup"]'::jsonb,
   TRUE, NOW()
 ),
 
--- ── STUDENT: no web permissions — mobile app only ─────────────────────────
+-- ── STUDENT: can_signup only — activates account via web, then uses mobile app
 (
   '00000000-0000-0000-0000-000000000003',
   'STUDENT',
-  '[]'::jsonb,
+  '["can_signup"]'::jsonb,
   TRUE, NOW()
 )
 
@@ -130,11 +130,13 @@ ON CONFLICT (id) DO NOTHING;
 -- ────────────────────────────────────────────────────────────
 -- 5. MODULES
 -- ────────────────────────────────────────────────────────────
-INSERT INTO modules (id, subject_id, parent_id, title, description, content, format, file_url, file_name, sort_order, status, created_by, created_at) VALUES
-('40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', NULL, 'History and Schools of Thought',    'Major schools of psychology.',     'Psychology evolved from philosophy and physiology. Wilhelm Wundt founded the first psychology lab in 1879.',                                                                                                                               'TEXT', NULL, NULL, 1, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '158 days'),
-('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-000000000001', NULL, 'Research Methods in Psychology',    'Scientific method and stats.',     'The scientific method involves: identifying a problem, forming a hypothesis, designing a study, collecting data, analyzing results, drawing conclusions, and communicating findings.', 'TEXT', NULL, NULL, 2, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '157 days'),
-('40000000-0000-0000-0000-000000000003', '30000000-0000-0000-0000-000000000001', NULL, 'Biological Bases of Behavior',      'Nervous system and brain.',        NULL,                                                                                                                                                                                              'TEXT', NULL, NULL, 3, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '156 days'),
-('40000000-0000-0000-0000-000000000004', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000003', 'Neurons and Neural Communication', 'A comprehensive visual guide to neural structures.', NULL,                                                                                                                                                          'PDF',  'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf', 'neurons_guide.pdf', 1, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '155 days')
+INSERT INTO modules (id, subject_id, parent_id, title, description, content, type, format, file_url, file_name, sort_order, status, created_by, created_at) VALUES
+('40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', NULL, 'History and Schools of Thought',         'Major schools of psychology.',                    'Psychology evolved from philosophy and physiology. Wilhelm Wundt founded the first psychology lab in 1879.',                                                                        'MODULE', 'TEXT', NULL, NULL, 1, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '158 days'),
+('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-000000000001', NULL, 'Research Methods in Psychology',          'Scientific method and stats.',                    'The scientific method involves: identifying a problem, forming a hypothesis, designing a study, collecting data, analyzing results, drawing conclusions, and communicating findings.','MODULE', 'TEXT', NULL, NULL, 2, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '157 days'),
+('40000000-0000-0000-0000-000000000003', '30000000-0000-0000-0000-000000000001', NULL, 'Biological Bases of Behavior',            'Nervous system and brain.',                       NULL,                                                                                                                                                                               'MODULE', 'TEXT', NULL, NULL, 3, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '156 days'),
+('40000000-0000-0000-0000-000000000004', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000003', 'Neurons and Neural Communication', 'A comprehensive visual guide to neural structures.', NULL,                                                                                                                                             'MODULE', 'PDF',  'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf', 'neurons_guide.pdf', 1, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '155 days'),
+('40000000-0000-0000-0000-000000000005', '30000000-0000-0000-0000-000000000001', NULL, 'Introduction to Psychology (E-Book)',     'Comprehensive introductory e-book.',              'This e-book provides a thorough introduction to psychology, covering its history, major theoretical perspectives, and core research methodologies.',                                  'E-BOOK', 'TEXT', NULL, NULL, 1, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '150 days'),
+('40000000-0000-0000-0000-000000000006', '30000000-0000-0000-0000-000000000001', NULL, 'Biological Psychology Reference Guide',  'PDF reference e-book on the neuroscience of behavior.', NULL,                                                                                                                                                                          'E-BOOK', 'PDF',  'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf', 'bio_psych_ebook.pdf', 2, 'APPROVED', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '145 days')
 ON CONFLICT (id) DO NOTHING;
 
 -- ────────────────────────────────────────────────────────────

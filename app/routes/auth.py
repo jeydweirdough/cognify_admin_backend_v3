@@ -7,7 +7,7 @@ import os
 import bcrypt
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
-from app.db import fetchone, execute, execute_returning
+from app.db import fetchone, fetchall, execute, execute_returning
 from app.middleware.auth import (
     login_required, set_auth_cookies, clear_auth_cookies,
     decode_token, make_access_token, ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH,
@@ -259,7 +259,110 @@ async def mobile_me(request: Request):
     return _me(auth)
 
 
-@web_auth_router.get("/sync-permissions")
+@web_auth_router.get("/signup-roles")
+async def get_signup_roles(request: Request):
+    """
+    Returns roles that have `can_signup` in their permissions.
+    Used by the frontend Sign Up form to show which roles are eligible.
+    """
+    rows = fetchall(
+        "SELECT id, name FROM roles WHERE permissions @> '\"can_signup\"'::jsonb AND is_system = FALSE OR name = 'FACULTY'",
+        []
+    )
+    # Re-query cleanly
+    rows = fetchall(
+        "SELECT id, name FROM roles WHERE permissions @> '\"can_signup\"'::jsonb",
+        []
+    )
+    return ok([{"id": str(r["id"]), "name": r["name"]} for r in rows])
+
+
+@web_auth_router.post("/signup")
+async def web_signup(request: Request):
+    """
+    Self-registration for pre-created PENDING users.
+
+    Algorithm:
+      1. Look up the user by email in the `users` table.
+      2. They must exist with status = 'PENDING' (pre-created by an Admin).
+      3. Their role must have `can_signup` in its permissions JSONB.
+      4. Validate the supplied password (and that it matches confirmation).
+      5. Set the password hash, flip status to 'ACTIVE', log them in.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    cvsu_id  = (body.get("cvsu_id") or "").strip()
+
+    if not email or not password or not cvsu_id:
+        return error("Email, institutional ID, and password are required.")
+
+    pw_err = validate_password(password)
+    if pw_err:
+        return error(pw_err)
+
+    # 1. Find the pre-created user
+    user = fetchone(
+        """SELECT u.id, u.email, u.cvsu_id, u.first_name, u.last_name,
+                  u.status, u.password,
+                  r.id AS role_id, r.name AS role, r.permissions
+           FROM users u
+           JOIN roles r ON u.role_id = r.id
+           WHERE LOWER(u.email) = %s""",
+        [email],
+    )
+
+    if not user:
+        return error("No account found with that email address. Please contact your administrator.", 404)
+
+    # 2. Must be PENDING (not yet activated)
+    if user["status"] != "PENDING":
+        if user["status"] == "ACTIVE":
+            return error("This account is already active. Please log in instead.", 409)
+        if user["status"] == "REMOVED":
+            return accout_removed("This account has been removed.")
+        return error(f"Account is in '{user['status']}' state and cannot complete sign-up.", 403)
+
+    # 3. Role must have can_signup permission
+    import json as _json
+    perms = user["permissions"]
+    if isinstance(perms, str):
+        perms = _json.loads(perms)
+    if "can_signup" not in (perms or []):
+        return error("Your account role is not permitted to self-register. Please contact your administrator.", 403)
+
+    # 4. Verify institutional ID matches
+    if user.get("cvsu_id") and user["cvsu_id"].lower() != cvsu_id.lower():
+        return error("Institutional ID does not match the account on file.", 403)
+
+    # If password already set (edge case), block double signup
+    if user.get("password"):
+        return error("Sign-up has already been completed for this account. Please log in.", 409)
+
+    # 5. Hash password, activate account
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    execute(
+        "UPDATE users SET password = %s, status = 'ACTIVE' WHERE id = %s",
+        [hashed, user["id"]],
+    )
+    log_action("User completed signup", email, str(user["id"]))
+
+    # Auto-login: return session cookie
+    updated_user = fetchone(
+        """SELECT u.id, u.email, u.first_name, u.last_name, u.cvsu_id, u.status,
+                  r.name AS role
+           FROM users u JOIN roles r ON u.role_id = r.id
+           WHERE u.id = %s""",
+        [user["id"]],
+    )
+    return _build_login_response(updated_user)
+
+
+
 async def web_sync_permissions(request: Request):
     """
     Re-fetches the authenticated user's current role + permissions from the DB.

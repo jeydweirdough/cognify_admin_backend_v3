@@ -53,9 +53,10 @@ CREATE TABLE IF NOT EXISTS modules (
     title       VARCHAR(300) NOT NULL,
     description TEXT,
     content     TEXT,
-    format      VARCHAR(10)  NOT NULL DEFAULT 'TEXT' CHECK (format IN ('TEXT', 'PDF')), -- NEW
-    file_url    TEXT,                                                                   -- NEW
-    file_name   VARCHAR(255),                                                           -- NEW
+    type        VARCHAR(10)  NOT NULL DEFAULT 'MODULE' CHECK (type IN ('MODULE', 'E-BOOK')), -- NEW: curriculum type
+    format      VARCHAR(10)  NOT NULL DEFAULT 'TEXT' CHECK (format IN ('TEXT', 'PDF')),
+    file_url    TEXT,
+    file_name   VARCHAR(255),
     sort_order  INT          NOT NULL DEFAULT 0,
     status      VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
                 CHECK (status IN ('PENDING','APPROVED','REJECTED', 'REMOVED')),
@@ -357,3 +358,21 @@ SET permissions = permissions
     || '["manage_whitelist_all", "manage_whitelist_students", "view_whitelist"]'::jsonb
 WHERE permissions @> '"manage_whitelist"'
   AND NOT (permissions @> '"manage_whitelist_all"');
+-- ── Sign-Up Feature: allow PENDING users to self-register via the web ─────────
+-- The `can_signup` permission is stored in roles.permissions (JSONB).
+-- A user pre-created by an Admin with status='PENDING' (no password yet) can
+-- complete their account by hitting POST /api/web/auth/signup if their role's
+-- permissions array contains "can_signup".
+-- password is nullable to support pre-created accounts that haven't signed up yet.
+ALTER TABLE users ALTER COLUMN password DROP NOT NULL;
+
+-- Index to efficiently look up pending users awaiting signup
+CREATE INDEX IF NOT EXISTS idx_users_pending_signup
+    ON users(status, LOWER(email))
+    WHERE status = 'PENDING';
+
+-- Grant can_signup to existing FACULTY and STUDENT roles that don't already have it
+UPDATE roles
+SET permissions = permissions || '["can_signup"]'::jsonb
+WHERE name IN ('FACULTY', 'STUDENT')
+  AND NOT (permissions @> '"can_signup"'::jsonb);

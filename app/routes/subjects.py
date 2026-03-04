@@ -26,6 +26,9 @@ def _format_module(m: dict) -> dict:
         m["parent_id"] = str(m["parent_id"])
     m["fileUrl"] = m.pop("file_url", None)
     m["fileName"] = m.pop("file_name", None)
+    # Ensure type defaults to MODULE for backwards compatibility
+    if not m.get("type"):
+        m["type"] = "MODULE"
     
     if m.get("format") == "PDF":
         m["fileData"] = m.pop("content", None)
@@ -99,13 +102,16 @@ def _list_subjects(request: Request, role: str):
         s["id"] = str(s["id"])
         s["passingRate"] = s.pop("passing_rate", 75)
         
-        # Count modules conditionally as well
+        # Count modules and ebooks conditionally as well
         if role == "ADMIN":
-            cnt = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s", [s["id"]])
+            cnt_mod = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'MODULE'", [s["id"]])
+            cnt_ebook = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'E-BOOK'", [s["id"]])
         else:
-            cnt = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND status = 'APPROVED'", [s["id"]])
+            cnt_mod = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'MODULE' AND status = 'APPROVED'", [s["id"]])
+            cnt_ebook = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'E-BOOK' AND status = 'APPROVED'", [s["id"]])
         
-        s["module_count"] = cnt["c"] if cnt else 0
+        s["module_count"] = cnt_mod["c"] if cnt_mod else 0
+        s["ebook_count"] = cnt_ebook["c"] if cnt_ebook else 0
         
     return result
 
@@ -242,12 +248,15 @@ def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
 
     status = "APPROVED" if auto_approve else "PENDING"
     content_payload = body.get("fileData") if body.get("format") == "PDF" else body.get("content")
+    module_type = body.get("type", "MODULE")
+    if module_type not in ("MODULE", "E-BOOK"):
+        module_type = "MODULE"
 
     topic = execute_returning(
-        """INSERT INTO modules (subject_id, parent_id, title, description, content, format, file_url, file_name, sort_order, status, created_by)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+        """INSERT INTO modules (subject_id, parent_id, title, description, content, type, format, file_url, file_name, sort_order, status, created_by)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
         [subject_id, body.get("parent_id"), clean_str(body["title"]), clean_str(body.get("description")), 
-         content_payload, body.get("format", "TEXT"), body.get("fileUrl"), body.get("fileName"),
+         content_payload, module_type, body.get("format", "TEXT"), body.get("fileUrl"), body.get("fileName"),
          body.get("sort_order", 0), status, auth.user_id],
     )
     log_action("Added module", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
@@ -286,11 +295,12 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     # ADMIN MODE: Auto-approve and write directly to live modules table
     updated = execute_returning(
         """UPDATE modules SET title = %s, description = %s, content = %s,
-                              format = %s, file_url = %s, file_name = %s,
+                              type = %s, format = %s, file_url = %s, file_name = %s,
                               sort_order = %s, status = 'APPROVED'
            WHERE id = %s RETURNING *""",
         [clean_str(body.get("title", existing["title"])), clean_str(body.get("description", existing.get("description"))),
-         content_payload, body.get("format", existing.get("format", "TEXT")), body.get("fileUrl", existing.get("file_url")),
+         content_payload, body.get("type", existing.get("type", "MODULE")),
+         body.get("format", existing.get("format", "TEXT")), body.get("fileUrl", existing.get("file_url")),
          body.get("fileName", existing.get("file_name")), body.get("sort_order", existing["sort_order"]), module_id],
     )
     
