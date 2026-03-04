@@ -39,8 +39,14 @@ def _list_users(request: Request, role_lock: str = None):
     status = get_filter(request, "status", VALID_STATUSES)
 
     sql = ["""
-        SELECT u.*, r.name AS role, r.id AS role_id
-        FROM users u JOIN roles r ON u.role_id = r.id
+        SELECT u.*,
+               r.name AS role, r.id AS role_id,
+               ab.first_name || ' ' || ab.last_name AS added_by_name,
+               apb.first_name || ' ' || apb.last_name AS approved_by_name
+        FROM users u
+        JOIN roles r ON u.role_id = r.id
+        LEFT JOIN users ab  ON u.added_by   = ab.id
+        LEFT JOIN users apb ON u.approved_by = apb.id
         WHERE 1=1
     """]
     params = []
@@ -49,7 +55,7 @@ def _list_users(request: Request, role_lock: str = None):
         sql.append("""AND (
             LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(%s)
             OR LOWER(u.email) LIKE LOWER(%s)
-            OR LOWER(u.institutional_id) LIKE LOWER(%s)
+            OR LOWER(COALESCE(u.cvsu_id, '')) LIKE LOWER(%s)
         )""")
         params += [search, search, search]
 
@@ -96,7 +102,14 @@ async def admin_pending(request: Request):
 async def admin_get(request: Request, user_id: str):
     auth = permission_required("view_users")(request)
     u = fetchone(
-        "SELECT u.*, r.name AS role, r.id AS role_id FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = %s",
+        """SELECT u.*, r.name AS role, r.id AS role_id,
+                  ab.first_name || ' ' || ab.last_name AS added_by_name,
+                  apb.first_name || ' ' || apb.last_name AS approved_by_name
+           FROM users u
+           JOIN roles r ON u.role_id = r.id
+           LEFT JOIN users ab  ON u.added_by   = ab.id
+           LEFT JOIN users apb ON u.approved_by = apb.id
+           WHERE u.id = %s""",
         [user_id]
     )
     if not u: return not_found()
@@ -110,7 +123,7 @@ async def admin_create(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    required = ["first_name", "last_name", "email", "password", "role", "institutional_id"]
+    required = ["first_name", "last_name", "email", "password", "role", "cvsu_id"]
     missing = require_fields(body, required)
     if missing:
         return error(f"Missing fields: {', '.join(missing)}")
@@ -133,18 +146,21 @@ async def admin_create(request: Request):
     hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
     user = execute_returning(
         """INSERT INTO users
-               (institutional_id, first_name, middle_name, last_name,
-                email, password, role_id, status, department)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+               (cvsu_id, first_name, middle_name, last_name,
+                email, password, role_id, status, department,
+                registration_type, added_by)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   'MANUALLY_ADDED', %s)
            RETURNING id, first_name, last_name, email, status""",
         [
-            clean_str(body["institutional_id"]),
+            clean_str(body["cvsu_id"]),
             clean_str(body["first_name"]),
             clean_str(body.get("middle_name")),
             clean_str(body["last_name"]),
             email, hashed, role_row["id"],
-            (body.get("status") or "ACTIVE").upper(),
+            (body.get("status") or "PENDING").upper(),
             clean_str(body.get("department")),
+            auth.user_id,
         ],
     )
     log_action("Created user", email, str(user["id"]), user_id=auth.user_id, ip=auth.ip)
@@ -165,7 +181,7 @@ async def admin_update(request: Request, user_id: str):
 
 @admin_users_router.patch("/{user_id}/status")
 async def admin_update_status(request: Request, user_id: str):
-    auth = permission_required("edit_users")(request)
+    # Approving a PENDING signup requires approve_users; other status changes require edit_users
     try:
         body = await request.json()
     except Exception:
@@ -174,10 +190,22 @@ async def admin_update_status(request: Request, user_id: str):
     if new_status not in VALID_STATUSES:
         return error(f"status must be one of: {', '.join(VALID_STATUSES)}")
 
-    existing = fetchone("SELECT id, email FROM users WHERE id = %s", [user_id])
+    existing = fetchone("SELECT id, email, status FROM users WHERE id = %s", [user_id])
     if not existing: return not_found()
 
+    # Approving a pending signup uses approve_users; toggling active/removed uses edit_users
+    required_perm = "approve_users" if existing["status"] == "PENDING" and new_status == "ACTIVE" else "edit_users"
+    auth = permission_required(required_perm)(request)
+
     execute("UPDATE users SET status = %s WHERE id = %s", [new_status, user_id])
+
+    # When a PENDING account is approved, record who approved it and when
+    if existing["status"] == "PENDING" and new_status == "ACTIVE":
+        execute(
+            "UPDATE users SET approved_by = %s, approved_at = NOW() WHERE id = %s",
+            [auth.user_id, user_id],
+        )
+
     log_action(f"User status changed to {new_status}", existing["email"], user_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": user_id, "status": new_status})
 

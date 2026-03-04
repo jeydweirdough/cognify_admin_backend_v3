@@ -302,6 +302,9 @@ SELECT
 
 AUTH function
 1. Create the Login Function
+-- Verifies credentials for login. Only ACTIVE accounts may log in.
+-- PENDING accounts (registered but awaiting admin approval) are explicitly blocked.
+-- REMOVED accounts are also blocked.
 CREATE OR REPLACE FUNCTION verify_user_login(
     p_email VARCHAR, 
     p_raw_password VARCHAR
@@ -326,7 +329,7 @@ BEGIN
     WHERE 
         LOWER(u.email) = LOWER(p_email)
         AND u.password = crypt(p_raw_password, u.password)
-        AND u.status = 'ACTIVE'; -- Prevent pending/removed users from logging in
+        AND u.status = 'ACTIVE'; -- Only ACTIVE users can log in; PENDING users must wait for admin approval
 END;
 $$ LANGUAGE plpgsql;
 -- ── Whitelist table (pre-registration approval list) ─────────────────────────
@@ -358,11 +361,16 @@ SET permissions = permissions
     || '["manage_whitelist_all", "manage_whitelist_students", "view_whitelist"]'::jsonb
 WHERE permissions @> '"manage_whitelist"'
   AND NOT (permissions @> '"manage_whitelist_all"');
--- ── Sign-Up Feature: allow PENDING users to self-register via the web ─────────
+-- ── Sign-Up Feature: allow PENDING users to set their password via the web ────
 -- The `can_signup` permission is stored in roles.permissions (JSONB).
 -- A user pre-created by an Admin with status='PENDING' (no password yet) can
--- complete their account by hitting POST /api/web/auth/signup if their role's
+-- set their password by hitting POST /api/web/auth/signup if their role's
 -- permissions array contains "can_signup".
+--
+-- IMPORTANT: After signup the user's status remains 'PENDING'.
+-- They CANNOT log in until an admin explicitly sets their status to 'ACTIVE'
+-- via the User Management page. The _do_login() guard enforces this.
+--
 -- password is nullable to support pre-created accounts that haven't signed up yet.
 ALTER TABLE users ALTER COLUMN password DROP NOT NULL;
 
@@ -376,3 +384,28 @@ UPDATE roles
 SET permissions = permissions || '["can_signup"]'::jsonb
 WHERE name IN ('FACULTY', 'STUDENT')
   AND NOT (permissions @> '"can_signup"'::jsonb);
+
+-- Grant approve_users to existing ADMIN roles that don't already have it
+UPDATE roles
+SET permissions = permissions || '["approve_users"]'::jsonb
+WHERE name = 'ADMIN'
+  AND NOT (permissions @> '"approve_users"'::jsonb);
+-- ── Registration tracking fields ──────────────────────────────────────────────
+-- registration_type: how the account was created
+--   'SELF_REGISTERED' = user filled the sign-up form themselves
+--   'MANUALLY_ADDED'  = an admin or faculty added them via the admin panel
+-- added_by:    FK to the admin/faculty who manually created the account (NULL for self-registered)
+-- approved_by: FK to the admin who activated the PENDING account (NULL until approved)
+-- approved_at: timestamp of when the account was approved
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS registration_type VARCHAR(20)
+    DEFAULT 'MANUALLY_ADDED'
+    CHECK (registration_type IN ('SELF_REGISTERED', 'MANUALLY_ADDED')),
+  ADD COLUMN IF NOT EXISTS added_by   UUID REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_users_registration_type ON users(registration_type);
+CREATE INDEX IF NOT EXISTS idx_users_added_by          ON users(added_by);
+CREATE INDEX IF NOT EXISTS idx_users_approved_by       ON users(approved_by);

@@ -34,6 +34,12 @@ INSERT INTO system_settings (
 --
 -- ON CONFLICT DO UPDATE ensures re-running this seed refreshes
 -- permissions if they were changed in permissions.ts.
+--
+-- SIGN-UP FLOW (can_signup permission):
+--   Roles with "can_signup" allow pre-created PENDING users to set
+--   their password via POST /api/web/auth/signup.
+--   After signup the user's status stays PENDING — they cannot log in
+--   until an admin activates the account (sets status = 'ACTIVE').
 -- ────────────────────────────────────────────────────────────
 INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
 
@@ -41,7 +47,7 @@ INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
 (
   '00000000-0000-0000-0000-000000000001',
   'ADMIN',
-  '["view_dashboard","view_subjects","create_subjects","edit_subjects","delete_subjects","view_content","create_content","edit_content","delete_content","verify_resources","view_assessments","create_assessments","edit_assessments","delete_assessments","view_revisions","resolve_revisions","view_analytics","view_student_analytics","export_analytics","view_users","create_users","edit_users","delete_users","view_whitelist","manage_whitelist","view_roles","manage_roles","view_logs","export_logs","view_settings","edit_settings","manage_backup","import_settings"]'::jsonb,
+  '["view_dashboard","view_subjects","create_subjects","edit_subjects","delete_subjects","view_content","create_content","edit_content","delete_content","verify_resources","view_assessments","create_assessments","edit_assessments","delete_assessments","view_revisions","resolve_revisions","view_analytics","view_student_analytics","export_analytics","view_users","create_users","edit_users","approve_users","delete_users","view_whitelist","manage_whitelist","view_roles","manage_roles","view_logs","export_logs","view_settings","edit_settings","manage_backup","import_settings"]'::jsonb,
   TRUE, NOW()
 ),
 
@@ -55,7 +61,8 @@ INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
   TRUE, NOW()
 ),
 
--- ── STUDENT: can_signup only — activates account via web, then uses mobile app
+-- ── STUDENT: can_signup only — student sets password via web signup form,
+--             then uses the mobile app. Account stays PENDING until admin activates.
 (
   '00000000-0000-0000-0000-000000000003',
   'STUDENT',
@@ -69,52 +76,78 @@ ON CONFLICT (id) DO UPDATE
 -- ────────────────────────────────────────────────────────────
 -- 3. USERS
 -- Passwords are bcrypt hashes (all accounts use "Password123!")
+--
+-- STATUS KEY:
+--   ACTIVE  — can log in; fully operational account
+--   PENDING — pre-created by admin OR signed up but not yet approved;
+--             CANNOT log in until admin sets status = 'ACTIVE'
+--   REMOVED — soft-deleted; blocked from login
+--
+-- Demo accounts:
+--   student5  (PENDING, no password) — simulates pre-created, not yet signed up
+--   student6  (PENDING, has password) — simulates signed-up but awaiting approval
 -- ────────────────────────────────────────────────────────────
 INSERT INTO users (
     id, cvsu_id, first_name, middle_name, last_name,
-    email, password, role_id, status, department, date_created
+    email, password, role_id, status, department, date_created,
+    registration_type, added_by, approved_by, approved_at
 ) VALUES
 (
   '10000000-0000-0000-0000-000000000001',
   'ADMIN-001', 'Ana', 'Cruz', 'Reyes', 'admin@cvsu.edu.ph',
   '$2b$12$KIXbhELtNrGF7JK7CzIxiONH5V7M3G0GzGPHMK5JxGmE0s0P2yOZC',
   '00000000-0000-0000-0000-000000000001', 'ACTIVE', 'Administration',
-  NOW() - INTERVAL '180 days'
+  NOW() - INTERVAL '180 days',
+  'MANUALLY_ADDED', NULL, NULL, NULL
 ),
 (
   '10000000-0000-0000-0000-000000000002',
   'FAC-2024-001', 'Marco', 'Antonio', 'Santos', 'faculty1@cvsu.edu.ph',
   '$2b$12$X8RhYvBn7MtK3O4P5qAh8eP2Z3KMQd9hW1aJlH4yNxVRmUxS1sOaC',
   '00000000-0000-0000-0000-000000000002', 'ACTIVE', 'Developmental Psychology',
-  NOW() - INTERVAL '150 days'
+  NOW() - INTERVAL '150 days',
+  'MANUALLY_ADDED', '10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '150 days'
 ),
 (
   '10000000-0000-0000-0000-000000000003',
   'FAC-2024-002', 'Elena', 'Grace', 'Villanueva', 'faculty2@cvsu.edu.ph',
   '$2b$12$X8RhYvBn7MtK3O4P5qAh8eP2Z3KMQd9hW1aJlH4yNxVRmUxS1sOaC',
   '00000000-0000-0000-0000-000000000002', 'ACTIVE', 'Clinical Psychology',
-  NOW() - INTERVAL '120 days'
+  NOW() - INTERVAL '120 days',
+  'MANUALLY_ADDED', '10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '120 days'
 ),
 (
   '10000000-0000-0000-0000-000000000011',
   '2024-PSY-001', 'Jose', 'Miguel', 'Garcia', 'student1@cvsu.edu.ph',
   '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
   '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology',
-  NOW() - INTERVAL '90 days'
+  NOW() - INTERVAL '90 days',
+  'SELF_REGISTERED', NULL, '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '88 days'
 ),
 (
   '10000000-0000-0000-0000-000000000012',
   '2024-PSY-002', 'Maria', 'Luisa', 'Fernandez', 'student2@cvsu.edu.ph',
   '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
   '00000000-0000-0000-0000-000000000003', 'ACTIVE', 'BS Psychology',
-  NOW() - INTERVAL '85 days'
+  NOW() - INTERVAL '85 days',
+  'SELF_REGISTERED', NULL, '10000000-0000-0000-0000-000000000001', NOW() - INTERVAL '83 days'
 ),
 (
   '10000000-0000-0000-0000-000000000015',
   '2024-PSY-005', 'Diego', 'Luis', 'Bautista', 'student5@cvsu.edu.ph',
+  NULL,
+  '00000000-0000-0000-0000-000000000003', 'PENDING', 'BS Psychology',
+  NOW() - INTERVAL '5 days',
+  'MANUALLY_ADDED', '10000000-0000-0000-0000-000000000001', NULL, NULL
+),
+-- student6: self-registered (password set) but still PENDING admin approval
+(
+  '10000000-0000-0000-0000-000000000016',
+  '2024-PSY-006', 'Sofia', 'Marie', 'Dela Cruz', 'student6@cvsu.edu.ph',
   '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
   '00000000-0000-0000-0000-000000000003', 'PENDING', 'BS Psychology',
-  NOW() - INTERVAL '5 days'
+  NOW() - INTERVAL '2 days',
+  'SELF_REGISTERED', NULL, NULL, NULL
 )
 ON CONFLICT (id) DO NOTHING;
 

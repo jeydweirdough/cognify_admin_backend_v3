@@ -46,7 +46,12 @@ def _do_login(user, allowed_roles: list[str]):
     if user["status"] == "REMOVED":
         return None, accout_removed("Account is REMOVED")
     if user["status"] == "PENDING":
-        return None, unauthorized("Account is pending approval")
+        return None, error(
+            "Your account is pending administrator approval. "
+            "You will be able to log in once an admin activates your account.",
+            403,
+            errors={"code": "ACCOUNT_PENDING"},
+        )
 
     if user["role"] != "ADMIN":
         settings = fetchone("SELECT maintenance_mode FROM system_settings LIMIT 1")
@@ -280,87 +285,86 @@ async def get_signup_roles(request: Request):
 @web_auth_router.post("/signup")
 async def web_signup(request: Request):
     """
-    Self-registration for pre-created PENDING users.
+    Self-registration — anyone can sign up; account is created as PENDING.
 
     Algorithm:
-      1. Look up the user by email in the `users` table.
-      2. They must exist with status = 'PENDING' (pre-created by an Admin).
-      3. Their role must have `can_signup` in its permissions JSONB.
-      4. Validate the supplied password (and that it matches confirmation).
-      5. Set the password hash, flip status to 'ACTIVE', log them in.
+      1. Validate required fields: first_name, last_name, email, cvsu_id, password, role.
+      2. Role must exist and have `can_signup` in its permissions.
+      3. Email must not already be registered.
+      4. Create user in `users` table with status = 'PENDING' and no session cookie.
+      5. Admin must set status = 'ACTIVE' before the user can log in.
     """
     try:
         body = await request.json()
     except Exception:
         body = {}
 
-    email = (body.get("email") or "").strip().lower()
-    password = body.get("password") or ""
-    cvsu_id  = (body.get("cvsu_id") or "").strip()
+    import json as _json
 
-    if not email or not password or not cvsu_id:
-        return error("Email, institutional ID, and password are required.")
+    # 1. Required fields
+    required = ["first_name", "last_name", "email", "cvsu_id", "password", "role"]
+    missing = require_fields(body, required)
+    if missing:
+        return error(f"Missing fields: {', '.join(missing)}")
 
-    pw_err = validate_password(password)
+    email = body["email"].strip().lower()
+    if not validate_email(email):
+        return error("Invalid email address.")
+
+    pw_err = validate_password(body["password"])
     if pw_err:
         return error(pw_err)
 
-    # 1. Find the pre-created user
-    user = fetchone(
-        """SELECT u.id, u.email, u.cvsu_id, u.first_name, u.last_name,
-                  u.status, u.password,
-                  r.id AS role_id, r.name AS role, r.permissions
-           FROM users u
-           JOIN roles r ON u.role_id = r.id
-           WHERE LOWER(u.email) = %s""",
-        [email],
+    role_name = body["role"].strip().upper()
+
+    # 2. Role must exist and allow self-signup
+    role_row = fetchone(
+        "SELECT id, name, permissions FROM roles WHERE name = %s",
+        [role_name],
     )
+    if not role_row:
+        return error("Invalid role selected.", 400)
 
-    if not user:
-        return error("No account found with that email address. Please contact your administrator.", 404)
-
-    # 2. Must be PENDING (not yet activated)
-    if user["status"] != "PENDING":
-        if user["status"] == "ACTIVE":
-            return error("This account is already active. Please log in instead.", 409)
-        if user["status"] == "REMOVED":
-            return accout_removed("This account has been removed.")
-        return error(f"Account is in '{user['status']}' state and cannot complete sign-up.", 403)
-
-    # 3. Role must have can_signup permission
-    import json as _json
-    perms = user["permissions"]
+    perms = role_row["permissions"]
     if isinstance(perms, str):
         perms = _json.loads(perms)
     if "can_signup" not in (perms or []):
-        return error("Your account role is not permitted to self-register. Please contact your administrator.", 403)
+        return error("Self-registration is not enabled for this role. Please contact your administrator.", 403)
 
-    # 4. Verify institutional ID matches
-    if user.get("cvsu_id") and user["cvsu_id"].lower() != cvsu_id.lower():
-        return error("Institutional ID does not match the account on file.", 403)
+    # 3. Duplicate check
+    if fetchone("SELECT id FROM users WHERE LOWER(email) = %s", [email]):
+        return error("An account with this email already exists. Please log in or contact your administrator.", 409)
 
-    # If password already set (edge case), block double signup
-    if user.get("password"):
-        return error("Sign-up has already been completed for this account. Please log in.", 409)
+    # 4. Create PENDING user — no password hash needed for login since status = PENDING blocks it
+    hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
 
-    # 5. Hash password, activate account
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    execute(
-        "UPDATE users SET password = %s, status = 'ACTIVE' WHERE id = %s",
-        [hashed, user["id"]],
+    user = execute_returning(
+        """INSERT INTO users
+               (cvsu_id, first_name, middle_name, last_name,
+                email, password, role_id, status, department,
+                registration_type, added_by)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING', %s,
+                   'SELF_REGISTERED', NULL)
+           RETURNING id, first_name, last_name, email, status""",
+        [
+            clean_str(body["cvsu_id"]),
+            clean_str(body["first_name"]),
+            clean_str(body.get("middle_name")),
+            clean_str(body["last_name"]),
+            email,
+            hashed,
+            role_row["id"],
+            clean_str(body.get("department")),
+        ],
     )
-    log_action("User completed signup", email, str(user["id"]))
 
-    # Auto-login: return session cookie
-    updated_user = fetchone(
-        """SELECT u.id, u.email, u.first_name, u.last_name, u.cvsu_id, u.status,
-                  r.name AS role
-           FROM users u JOIN roles r ON u.role_id = r.id
-           WHERE u.id = %s""",
-        [user["id"]],
+    log_action("User self-registered — awaiting admin approval", email, str(user["id"]))
+
+    # 5. Return 201 — no session cookie; user cannot log in until approved
+    return created(
+        {"id": str(user["id"]), "email": email, "status": "PENDING"},
+        "Registration complete! Your account is pending administrator approval. You will be notified once access is granted.",
     )
-    return _build_login_response(updated_user)
-
 
 
 async def web_sync_permissions(request: Request):

@@ -29,10 +29,12 @@ def _fmt_user(u: dict) -> dict:
     """Format a users-table row for the whitelist response."""
     u["id"]            = str(u["id"])
     u["name"]          = " ".join(filter(None, [u.get("first_name"), u.get("middle_name"), u.get("last_name")]))
-    u["studentNumber"] = u.get("institutional_id")
+    u["studentNumber"] = u.get("cvsu_id") or u.get("institutional_id")
     u["dateAdded"]     = u["date_created"].isoformat() if u.get("date_created") else None
     u.pop("password", None)
     if u.get("role_id"): u["role_id"] = str(u["role_id"])
+    if u.get("added_by"):    u["added_by"]    = str(u["added_by"])
+    if u.get("approved_by"): u["approved_by"] = str(u["approved_by"])
     return u
 
 
@@ -48,9 +50,11 @@ def _list_pending(request: Request, role_lock: str = None):
     role   = role_lock or get_filter(request, "role", VALID_ROLES)
 
     sql    = ["""
-        SELECT u.*, r.name AS role, r.id AS role_id
+        SELECT u.*, r.name AS role, r.id AS role_id,
+               ab.first_name || ' ' || ab.last_name AS added_by_name
         FROM users u
         JOIN roles r ON u.role_id = r.id
+        LEFT JOIN users ab ON u.added_by = ab.id
         WHERE u.status = 'PENDING'
     """]
     params = []
@@ -59,7 +63,7 @@ def _list_pending(request: Request, role_lock: str = None):
         sql.append("""AND (
             LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(%s)
             OR LOWER(u.email) LIKE LOWER(%s)
-            OR LOWER(u.institutional_id) LIKE LOWER(%s)
+            OR LOWER(COALESCE(u.cvsu_id, '')) LIKE LOWER(%s)
         )""")
         params += [search, search, search]
 
@@ -113,8 +117,10 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
 
     entry = execute_returning(
         """INSERT INTO users
-               (first_name, middle_name, last_name, institutional_id, email, password, role_id, status)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
+               (first_name, middle_name, last_name, cvsu_id, email, password, role_id, status,
+                registration_type, added_by)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING',
+                   'MANUALLY_ADDED', %s)
            RETURNING *""",
         [
             clean_str(body["first_name"]),
@@ -124,6 +130,7 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
             email,
             placeholder_pw,
             role_row["id"],
+            added_by,
         ],
     )
     log_action("Whitelist entry added", email, str(entry["id"]), user_id=added_by, ip=ip)
@@ -264,6 +271,27 @@ async def admin_delete(request: Request, entry_id: str):
     return _delete_entry(entry_id, auth)
 
 
+@admin_whitelist_router.post("/{entry_id}/approve")
+async def admin_approve(request: Request, entry_id: str):
+    """Approve a PENDING user — sets status=ACTIVE, records approved_by + approved_at."""
+    auth = permission_required("approve_users")(request)
+    existing = fetchone(
+        "SELECT id, email, status FROM users WHERE id = %s AND status = 'PENDING'",
+        [entry_id],
+    )
+    if not existing:
+        return not_found("Pending entry not found or already processed")
+
+    execute(
+        """UPDATE users
+           SET status = 'ACTIVE', approved_by = %s, approved_at = NOW()
+           WHERE id = %s""",
+        [auth.user_id, entry_id],
+    )
+    log_action("Approved pending user", existing["email"], entry_id, user_id=auth.user_id, ip=auth.ip)
+    return ok({"id": entry_id, "status": "ACTIVE"}, "Account approved. The user can now log in.")
+
+
 # ═══════════════════════════════════════════════════════════════
 # FACULTY — STUDENT role only
 # ═══════════════════════════════════════════════════════════════
@@ -312,3 +340,25 @@ async def faculty_delete(request: Request, entry_id: str):
     if not existing: return not_found("Whitelist entry not found")
     if existing["role"].upper() != "STUDENT": return forbidden("Faculty can only delete student entries")
     return _delete_entry(entry_id, auth)
+
+
+@faculty_whitelist_router.post("/{entry_id}/approve")
+async def faculty_approve(request: Request, entry_id: str):
+    """Faculty approves a PENDING student account."""
+    auth = permission_required("approve_users")(request)
+    existing = fetchone("""
+        SELECT u.id, u.email, u.status, r.name AS role
+        FROM users u JOIN roles r ON u.role_id = r.id
+        WHERE u.id = %s AND u.status = 'PENDING'
+    """, [entry_id])
+    if not existing: return not_found("Pending entry not found or already processed")
+    if existing["role"].upper() != "STUDENT": return forbidden("Faculty can only approve student accounts")
+
+    execute(
+        """UPDATE users
+           SET status = 'ACTIVE', approved_by = %s, approved_at = NOW()
+           WHERE id = %s""",
+        [auth.user_id, entry_id],
+    )
+    log_action("Approved pending student", existing["email"], entry_id, user_id=auth.user_id, ip=auth.ip)
+    return ok({"id": entry_id, "status": "ACTIVE"}, "Student account approved.")
