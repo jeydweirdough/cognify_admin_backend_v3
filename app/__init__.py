@@ -19,9 +19,13 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Cognify Admin API")
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    origins = os.getenv(
+    # Origins are read from CORS_ORIGINS (comma-separated).
+    # Strip whitespace from each entry so values like
+    # "https://foo.vercel.app, https://bar.vercel.app" parse correctly.
+    raw_origins = os.getenv(
         "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
-    ).split(",")
+    )
+    origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,

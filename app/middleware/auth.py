@@ -6,12 +6,18 @@ Storage strategy:
   - refresh_token → HttpOnly cookie
   - user_role     → readable JS cookie (frontend UI gating only)
   - Bearer header also accepted for API/mobile clients
+
+Cookie SameSite strategy (auto-detected):
+  - Development  → SameSite=Lax,  Secure=False  (localhost, same-origin)
+  - Production   → SameSite=None, Secure=True   (cross-origin, different subdomains)
+
+Set APP_ENV=production in your Vercel backend environment variables.
 """
 import os
 import jwt
 import functools
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from app.utils.responses import unauthorized, forbidden
@@ -21,6 +27,39 @@ ACCESS_MINUTES = int(os.getenv("JWT_ACCESS_EXPIRY_MINUTES", 60))
 REFRESH_DAYS   = int(os.getenv("JWT_REFRESH_EXPIRY_DAYS", 7))
 COOKIE_ACCESS  = "access_token"
 COOKIE_REFRESH = "refresh_token"
+
+
+# ── Environment detection ─────────────────────────────────────────────────────
+
+def _is_prod() -> bool:
+    """
+    Returns True when running in production (Vercel or any deployed env).
+    Checks APP_ENV first, then falls back to FLASK_ENV.
+
+    To enable production mode, set in your Vercel environment variables:
+        APP_ENV=production
+    """
+    env = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")).strip().lower()
+    return env == "production"
+
+
+def _cookie_params() -> dict:
+    """
+    Returns the correct cookie security parameters based on the environment.
+
+    Development  → SameSite=Lax,  Secure=False
+      Works for localhost where frontend and backend share the same origin.
+
+    Production   → SameSite=None, Secure=True
+      Required when frontend and backend are on different subdomains
+      (e.g. frontend.vercel.app vs backend.vercel.app).
+      Browsers will reject SameSite=None without Secure=True.
+    """
+    prod = _is_prod()
+    return {
+        "secure":   prod,
+        "samesite": "none" if prod else "lax",
+    }
 
 
 # ── Token helpers ─────────────────────────────────────────────────────────────
@@ -42,23 +81,46 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-def _is_prod() -> bool:
-    return os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")) == "production"
-
+# ── Cookie management ─────────────────────────────────────────────────────────
 
 def set_auth_cookies(response: Response, user_id: str, role: str):
-    prod = _is_prod()
+    """
+    Sets HttpOnly access + refresh cookies and a readable user_role cookie.
+    Cookie attributes auto-adjust based on APP_ENV:
+      - production  → Secure=True,  SameSite=None  (cross-origin safe)
+      - development → Secure=False, SameSite=Lax   (localhost safe)
+    """
+    params = _cookie_params()
     access  = make_access_token(user_id, role)
     refresh = make_refresh_token(user_id)
-    response.set_cookie(COOKIE_ACCESS,  access,  httponly=True,  secure=prod, samesite="lax", max_age=ACCESS_MINUTES * 60)
-    response.set_cookie(COOKIE_REFRESH, refresh, httponly=True,  secure=prod, samesite="lax", max_age=REFRESH_DAYS * 86400)
-    response.set_cookie("user_role",    role,    httponly=False, secure=prod, samesite="lax", max_age=ACCESS_MINUTES * 60)
+
+    response.set_cookie(
+        COOKIE_ACCESS, access,
+        httponly=True,
+        max_age=ACCESS_MINUTES * 60,
+        **params,
+    )
+    response.set_cookie(
+        COOKIE_REFRESH, refresh,
+        httponly=True,
+        max_age=REFRESH_DAYS * 86400,
+        **params,
+    )
+    # user_role is intentionally NOT httponly so the frontend JS can read it
+    response.set_cookie(
+        "user_role", role,
+        httponly=False,
+        max_age=ACCESS_MINUTES * 60,
+        **params,
+    )
     return response
 
 
 def clear_auth_cookies(response: Response):
+    """Clears all auth cookies. Uses matching params so browsers accept the deletion."""
+    params = _cookie_params()
     for name in (COOKIE_ACCESS, COOKIE_REFRESH, "user_role"):
-        response.delete_cookie(name)
+        response.delete_cookie(name, **params)
     return response
 
 
@@ -111,7 +173,6 @@ def login_required(request: Request) -> AuthState:
 def roles_required(*allowed):
     """FastAPI dependency factory — checks role after login_required."""
     def dependency(auth: AuthState = None, request: Request = None) -> AuthState:
-        # Resolve auth if not injected
         if auth is None:
             auth = login_required(request)
         if auth.role not in allowed:
@@ -142,9 +203,6 @@ def permission_required(permission_id: str):
     Usage:
         auth = permission_required("edit_subjects")(request)
         auth = permission_required("approve_verification")(request)
-
-    This replaces scattered  `if auth.role != "ADMIN": return forbidden()`
-    checks with a single declarative guard that works for ANY custom role.
     """
     def check(request: Request) -> AuthState:
         from app.db import fetchone as _fetchone
@@ -154,7 +212,6 @@ def permission_required(permission_id: str):
         if auth.role == "ADMIN":
             return auth
 
-        # Fetch the permissions array for this user's assigned role
         row = _fetchone(
             """SELECT r.permissions
                FROM users u

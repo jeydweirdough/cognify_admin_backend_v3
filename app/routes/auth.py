@@ -3,7 +3,6 @@ Auth routes — shared logic, two routers:
   /api/web/auth    → web_auth_router   (ADMIN + FACULTY only)
   /api/mobile/auth → mobile_auth_router (STUDENT only)
 """
-import os
 import bcrypt
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -11,7 +10,7 @@ from app.db import fetchone, fetchall, execute, execute_returning
 from app.middleware.auth import (
     login_required, set_auth_cookies, clear_auth_cookies,
     decode_token, make_access_token, ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH,
-    AuthState,
+    AuthState, _cookie_params,
 )
 from app.utils.responses import accout_removed, ok, error, unauthorized, created, not_found
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
@@ -394,11 +393,15 @@ def _refresh_token(request: Request):
     if not user or user["status"] == "REMOVED":
         return unauthorized("User not found or REMOVED")
 
-    prod = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")) == "production"
     access = make_access_token(str(user["id"]), user["role"])
     response = JSONResponse({"success": True, "message": "Token refreshed"})
-    response.set_cookie(COOKIE_ACCESS, access, httponly=True, secure=prod,
-                        samesite="lax", max_age=ACCESS_MINUTES * 60)
+    params = _cookie_params()
+    response.set_cookie(
+        COOKIE_ACCESS, access,
+        httponly=True,
+        max_age=ACCESS_MINUTES * 60,
+        **params,
+    )
     return response
 
 
