@@ -300,8 +300,8 @@ SELECT
     (SELECT COALESCE(ROUND(AVG(readiness_percentage), 2), 0)
      FROM view_student_individual_readiness) AS general_student_readiness_avg;
 
-AUTH function
-1. Create the Login Function
+-- AUTH function
+-- 1. Create the Login Function
 -- Verifies credentials for login. Only ACTIVE accounts may log in.
 -- PENDING accounts (registered but awaiting admin approval) are explicitly blocked.
 -- REMOVED accounts are also blocked.

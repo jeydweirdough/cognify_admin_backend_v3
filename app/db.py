@@ -1,4 +1,5 @@
-"""PostgreSQL connection pool and query helpers."""
+"""PostgreSQL connection pool and query helpers using Supabase pooler."""
+
 import os
 import psycopg2
 import psycopg2.pool
@@ -7,20 +8,25 @@ from contextlib import contextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
+
 _pool = None
 
 
 def get_pool():
     global _pool
+
     if _pool is None:
+        database_url = os.getenv("DB_URL")
+
+        if not database_url:
+            raise ValueError("DB_URL not found in .env")
+
         _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1, maxconn=10,
-            host=os.getenv("DB_HOST", "localhost"),
-            port=int(os.getenv("DB_PORT", 5432)),
-            dbname=os.getenv("DB_NAME", "psych_db"),
-            user=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASSWORD", ""),
+            minconn=1,
+            maxconn=10,
+            dsn=database_url
         )
+
     return _pool
 
 
@@ -28,6 +34,7 @@ def get_pool():
 def get_conn():
     pool = get_pool()
     conn = pool.getconn()
+
     try:
         yield conn
         conn.commit()
@@ -72,22 +79,30 @@ def execute_returning(sql, params=None):
 
 
 def paginate(sql_body, params, page, per_page):
-    """Run a count query + paginated query. sql_body must NOT include LIMIT/OFFSET."""
-    # Strip trailing ORDER BY before wrapping in a COUNT subquery.
-    # ORDER BY inside a subquery used only for counting is unnecessary and
-    # causes a SyntaxError in some PostgreSQL / psycopg2 configurations.
     import re as _re
+
     count_body = _re.sub(
-        r'\s+ORDER\s+BY\s+.+$', '', sql_body.strip(),
+        r'\s+ORDER\s+BY\s+.+$',
+        '',
+        sql_body.strip(),
         flags=_re.IGNORECASE | _re.DOTALL
     )
-    count_sql = f"SELECT COUNT(*) AS total FROM ({count_body}) AS paged_sub"
+
+    count_sql = f"SELECT COUNT(*) AS total FROM ({count_body}) AS sub"
+
     with get_cursor() as cur:
         cur.execute(count_sql, list(params))
         total = cur.fetchone()["total"]
+
         offset = (page - 1) * per_page
-        cur.execute(f"{sql_body} LIMIT %s OFFSET %s", list(params) + [per_page, offset])
+
+        cur.execute(
+            f"{sql_body} LIMIT %s OFFSET %s",
+            list(params) + [per_page, offset]
+        )
+
         items = [dict(r) for r in cur.fetchall()]
+
     return {
         "items": items,
         "total": total,
