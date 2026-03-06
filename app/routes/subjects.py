@@ -363,7 +363,7 @@ async def mobile_get_subject(request: Request, subject_id: str):
     if not subject: return not_found("Subject not found")
     subject["id"] = str(subject["id"])
     if subject.get("created_by"): subject["created_by"] = str(subject["created_by"])
-    subject["modules"] = _build_module_tree(subject_id, None, "STUDENT")
+    subject["topics"] = _build_module_tree(subject_id, None, "STUDENT")
     return ok(subject)
 
 

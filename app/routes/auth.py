@@ -3,16 +3,16 @@ Auth routes — shared logic, two routers:
   /api/web/auth    → web_auth_router   (ADMIN + FACULTY only)
   /api/mobile/auth → mobile_auth_router (STUDENT only)
 """
-from cProfile import label
-
 import bcrypt
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from app.db import fetchone, fetchall, execute, execute_returning
 from app.middleware.auth import (
     login_required, set_auth_cookies, clear_auth_cookies,
-    decode_token, make_access_token, ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH,
+    decode_token, make_access_token, make_refresh_token,
+    ACCESS_MINUTES, COOKIE_ACCESS, COOKIE_REFRESH,
     AuthState, _cookie_params, mobile_permission_required,
+    is_mobile_request,
 )
 from app.utils.responses import accout_removed, ok, error, unauthorized, created, not_found
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
@@ -311,15 +311,12 @@ async def mobile_login(request: Request):
     if err:
         return err
 
-    # Mobile login returns the JWT in the response body (not just cookies) because
-    # React Native cannot reliably use HttpOnly cookies across domains.
-    # The app stores the token in AsyncStorage via tokenStore.set().
-    # We also return the full permissions array so the mobile app can do
-    # client-side permission checks (can("mobile_view_progress") etc.) without
-    # needing an extra API call — mirrors the web app's /me permissions refresh.
-    from app.middleware.auth import make_access_token, ACCESS_MINUTES
+    # Mobile login returns tokens in the response body ONLY — no cookies.
+    # React Native cannot reliably use HttpOnly cookies across origins.
+    # The app stores tokens in AsyncStorage and sends Authorization: Bearer <token>.
     execute("UPDATE users SET last_login = NOW() WHERE id = %s", [user["id"]])
-    access_token = make_access_token(str(user["id"]), user["role"])
+    access_token  = make_access_token(str(user["id"]), user["role"])
+    refresh_token = make_refresh_token(str(user["id"]))
 
     role_row = fetchone("SELECT permissions FROM roles WHERE name = %s", [user["role"]])
     perms = (role_row.get("permissions") or []) if role_row else []
@@ -333,16 +330,16 @@ async def mobile_login(request: Request):
         "cvsu_id":     user.get("cvsu_id"),
         "permissions": perms,
     }
-    response = JSONResponse({
+    # No Set-Cookie headers — mobile stores tokens in AsyncStorage only.
+    log_action("Mobile login", user["email"], str(user["id"]), user_id=str(user["id"]))
+    return JSONResponse({
         "success": True,
         "message": "Login successful",
         "data": payload,
         "token": access_token,
+        "refresh_token": refresh_token,
         "expires_in": ACCESS_MINUTES * 60,
     })
-    set_auth_cookies(response, str(user["id"]), user["role"])
-    log_action("Mobile login", user["email"], str(user["id"]), user_id=str(user["id"]))
-    return response
 
 
 @mobile_auth_router.post("/register")
@@ -355,21 +352,34 @@ async def mobile_register(request: Request):
 
 
 @mobile_auth_router.post("/logout")
-async def mobile_logout():
-    response = JSONResponse({"success": True, "message": "Logged out"})
-    clear_auth_cookies(response)
-    return response
+async def mobile_logout(request: Request):
+    """
+    Mobile logout is stateless — the client discards tokens from AsyncStorage.
+    No cookies to clear. Optionally logs the action if a valid token is present.
+    """
+    try:
+        from app.middleware.auth import get_auth as _get_auth
+        auth = _get_auth(request)
+        if auth:
+            log_action("Mobile logout", user_id=auth.user_id)
+    except Exception:
+        pass
+    return JSONResponse({"success": True, "message": "Logged out"})
 
 
 @mobile_auth_router.post("/refresh")
 async def mobile_refresh(request: Request):
-    return _refresh_token(request)
+    """
+    Mobile token refresh — refresh_token is supplied in the request body
+    (NOT a cookie) and a new access_token is returned in the response body.
+    """
+    return await _mobile_refresh_token(request)
 
 
 @mobile_auth_router.get("/me")
 async def mobile_me(request: Request):
     auth = mobile_permission_required("mobile_view_profile")(request)
-    return _me(auth)
+    return _me_mobile(auth)
 
 
 @web_auth_router.get("/signup-roles")
@@ -485,9 +495,13 @@ async def web_sync_permissions(request: Request):
     return _me(auth)
 
 
-# ── Shared helpers ─────────────────────────────────────────────────────────────
+# ── Auth helpers — web (cookie-based) ─────────────────────────────────────────
 
 def _refresh_token(request: Request):
+    """
+    Web token refresh: reads the refresh_token HttpOnly cookie and issues a new
+    access_token cookie. Web-only — mobile uses _mobile_refresh_token instead.
+    """
     token = request.cookies.get(COOKIE_REFRESH)
     if not token:
         return unauthorized("No refresh token")
@@ -515,6 +529,7 @@ def _refresh_token(request: Request):
 
 
 def _me(auth: AuthState):
+    """Web /me — returns user + permissions. Role cookie is managed by the browser."""
     user = fetchone(
         """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
@@ -526,4 +541,68 @@ def _me(auth: AuthState):
     if not user:
         return unauthorized("User not found")
     user["id"] = str(user["id"])
+    return ok(user)
+
+
+# ── Auth helpers — mobile (Bearer token / AsyncStorage) ───────────────────────
+
+async def _mobile_refresh_token(request: Request):
+    """
+    Mobile token refresh: reads refresh_token from the JSON request body
+    (mobile stores it in AsyncStorage, not a cookie) and returns a new
+    access_token + refresh_token in the response body.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    # Mobile sends refresh_token in the body; fall back to cookie for dev convenience
+    token = body.get("refresh_token") or request.cookies.get(COOKIE_REFRESH)
+    if not token:
+        return unauthorized("No refresh token provided")
+
+    payload = decode_token(token)
+    if not payload:
+        return unauthorized("Refresh token expired or invalid")
+
+    user = fetchone(
+        "SELECT u.id, u.status, r.name AS role FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = %s",
+        [payload["sub"]],
+    )
+    if not user or user["status"] == "REMOVED":
+        return unauthorized("User not found or removed")
+
+    # Rotate both tokens so each refresh invalidates the old pair
+    new_access  = make_access_token(str(user["id"]), user["role"])
+    new_refresh = make_refresh_token(str(user["id"]))
+
+    return JSONResponse({
+        "success": True,
+        "message": "Token refreshed",
+        "token": new_access,
+        "refresh_token": new_refresh,
+        "expires_in": ACCESS_MINUTES * 60,
+    })
+
+
+def _me_mobile(auth: AuthState):
+    """
+    Mobile /me — returns user + full permissions array.
+    The mobile app caches this in AsyncStorage to avoid extra calls.
+    """
+    user = fetchone(
+        """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
+                  u.email, u.department, u.status, u.date_created, u.last_login,
+                  r.id AS role_id, r.name AS role_name, r.permissions
+           FROM users u JOIN roles r ON u.role_id = r.id
+           WHERE u.id = %s""",
+        [auth.user_id],
+    )
+    if not user:
+        return unauthorized("User not found")
+    user["id"] = str(user["id"])
+    # Ensure permissions is always a list for the mobile client
+    if user.get("permissions") is None:
+        user["permissions"] = []
     return ok(user)

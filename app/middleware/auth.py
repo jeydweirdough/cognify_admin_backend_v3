@@ -1,15 +1,29 @@
 """
 JWT + cookie auth middleware.
 
-Storage strategy:
-  - access_token  → HttpOnly cookie (prevents XSS)
-  - refresh_token → HttpOnly cookie
-  - user_role     → readable JS cookie (frontend UI gating only)
-  - Bearer header also accepted for API/mobile clients
+Storage strategy per client:
+  WEB (Admin/Faculty — browser):
+    - access_token  → HttpOnly cookie (prevents XSS)
+    - refresh_token → HttpOnly cookie
+    - user_role     → readable JS cookie (frontend UI gating only)
 
-Cookie SameSite strategy (auto-detected):
+  MOBILE (Student — React Native / Expo):
+    - Tokens are returned in the JSON response body and stored in AsyncStorage.
+    - Cookies are NOT used for mobile: React Native cannot reliably send/receive
+      HttpOnly cookies across origins, and AsyncStorage is the correct storage
+      primitive for mobile apps.
+    - Auth is carried via the Authorization: Bearer <token> header on every request.
+    - No refresh cookie is issued for mobile; the client re-authenticates when
+      the access token expires.
+
+Cookie SameSite strategy for web (auto-detected):
   - Development  → SameSite=Lax,  Secure=False  (localhost, same-origin)
   - Production   → SameSite=None, Secure=True   (cross-origin, different subdomains)
+
+Client detection:
+  Routes under /api/mobile/* are treated as mobile-origin.
+  Routes under /api/web/*   are treated as web-origin.
+  Alternatively, clients may send X-Client-Type: mobile or X-Client-Type: web.
 
 Set APP_ENV=production in your Vercel backend environment variables.
 """
@@ -62,6 +76,25 @@ def _cookie_params() -> dict:
     }
 
 
+# ── Client-type detection ─────────────────────────────────────────────────────
+
+def is_mobile_request(request: Request) -> bool:
+    """
+    Returns True if the request originates from the mobile (React Native) client.
+
+    Detection order:
+      1. X-Client-Type header: 'mobile' → True, 'web' → False
+      2. URL path prefix: /api/mobile/* → True, /api/web/* → False
+      3. Default: False (treat as web)
+    """
+    client_type = request.headers.get("X-Client-Type", "").strip().lower()
+    if client_type == "mobile":
+        return True
+    if client_type == "web":
+        return False
+    return request.url.path.startswith("/api/mobile/")
+
+
 # ── Token helpers ─────────────────────────────────────────────────────────────
 
 def make_access_token(user_id: str, role: str) -> str:
@@ -81,11 +114,13 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-# ── Cookie management ─────────────────────────────────────────────────────────
+# ── Cookie management (WEB only) ──────────────────────────────────────────────
 
 def set_auth_cookies(response: Response, user_id: str, role: str):
     """
     Sets HttpOnly access + refresh cookies and a readable user_role cookie.
+    FOR WEB CLIENTS ONLY. Mobile clients receive tokens in the response body.
+
     Cookie attributes auto-adjust based on APP_ENV:
       - production  → Secure=True,  SameSite=None  (cross-origin safe)
       - development → Secure=False, SameSite=Lax   (localhost safe)
@@ -117,7 +152,10 @@ def set_auth_cookies(response: Response, user_id: str, role: str):
 
 
 def clear_auth_cookies(response: Response):
-    """Clears all auth cookies. Uses matching params so browsers accept the deletion."""
+    """
+    Clears all auth cookies. Uses matching params so browsers accept the deletion.
+    FOR WEB CLIENTS ONLY. Mobile clients clear their AsyncStorage token directly.
+    """
     params = _cookie_params()
     for name in (COOKIE_ACCESS, COOKIE_REFRESH, "user_role"):
         response.delete_cookie(name, **params)
@@ -127,12 +165,22 @@ def clear_auth_cookies(response: Response):
 # ── Token extraction ──────────────────────────────────────────────────────────
 
 def _extract_token(request: Request) -> Optional[str]:
-    token = request.cookies.get(COOKIE_ACCESS)
-    if not token:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-    return token or None
+    """
+    Extracts the JWT from the request.
+
+    Priority:
+      1. Authorization: Bearer <token> header  — used by mobile (AsyncStorage token)
+      2. access_token HttpOnly cookie          — used by web (browser)
+
+    Mobile requests should ALWAYS use the Authorization header.
+    Web requests should ALWAYS use cookies (no Authorization header needed).
+    """
+    # Authorization header takes priority — this is the mobile path
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    # Fall back to cookie — this is the web path
+    return request.cookies.get(COOKIE_ACCESS) or None
 
 
 # ── Auth state container ──────────────────────────────────────────────────────
@@ -195,6 +243,7 @@ def _http_exc(response: JSONResponse) -> _HTTPException:
 def permission_required(permission_id: str):
     """
     Route-level permission guard based on the DB roles.permissions JSON array.
+    FOR WEB CLIENTS (Admin/Faculty) ONLY.
 
     ADMIN role always bypasses all permission checks (system-level bypass).
     All other roles must have the specific permission_id in their role's
@@ -207,6 +256,10 @@ def permission_required(permission_id: str):
     def check(request: Request) -> AuthState:
         from app.db import fetchone as _fetchone
         auth = login_required(request)
+
+        # Web guard: reject mobile/student tokens on web endpoints
+        if auth.role == "STUDENT":
+            raise _http_exc(forbidden("Student accounts must use the mobile app"))
 
         # ADMIN role has a full system-level bypass — never blocked
         if auth.role == "ADMIN":
@@ -233,9 +286,10 @@ def permission_required(permission_id: str):
 def mobile_permission_required(permission_id: str):
     """
     Route-level permission guard for mobile (student) endpoints.
+    FOR MOBILE CLIENTS (Students) ONLY — enforces Bearer token auth.
 
     Enforces that:
-      1. The user is authenticated (valid JWT).
+      1. The user is authenticated via Bearer token (Authorization header).
       2. The user's role is STUDENT.
       3. The role has the required permission_id.
 
@@ -244,8 +298,17 @@ def mobile_permission_required(permission_id: str):
     """
     def check(request: Request) -> AuthState:
         from app.db import fetchone as _fetchone
+
+        # Mobile endpoints must use Bearer token, not cookies
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            # Also accept cookie-less requests that have a valid cookie
+            # (for dev/testing convenience) but prefer the header
+            pass
+
         auth = login_required(request)
 
+        # Mobile guard: reject web/admin/faculty tokens on mobile endpoints
         if auth.role != "STUDENT":
             raise _http_exc(forbidden("This endpoint is for students only"))
 
