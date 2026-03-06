@@ -1,7 +1,7 @@
 import datetime
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, paginate
-from app.middleware.auth import login_required, permission_required
+from app.middleware.auth import login_required, permission_required, mobile_permission_required
 from app.utils.responses import ok, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search
 import uuid
@@ -263,6 +263,11 @@ def _student_full_record(identifier: str) -> dict | None:
     """, [user_id])
     student["topicMastery"] = [{"topic": r["topic"], "mastery": round(float(r["mastery"] or 0), 1)} for r in topic_mastery]
 
+    # Mood data — last 30 entries + frequency breakdown
+    # mood_key values mirror MoodKey in mobile/constants/moods.ts (Inside Out 2)
+    from app.routes.moods import _student_mood_data
+    student["moodData"] = _student_mood_data(user_id)
+
     return student
 
 def _analytics_list(request: Request):
@@ -337,3 +342,40 @@ async def faculty_get_analytics_list(request: Request):
 @faculty_dash_router.get("/analytics/{student_id}")
 async def faculty_get_analytics_detail(request: Request, student_id: str):
     return await _shared_analytics_detail(request, student_id)
+
+
+# ═══════════════════════════════════════════════════════════════
+# MOBILE — Student personal progress & readiness
+# Enforces mobile_login permission (STUDENT role only).
+# ═══════════════════════════════════════════════════════════════
+
+@mobile_prog_router.get("/progress")
+async def mobile_progress(request: Request):
+    """Return the authenticated student's own readiness & assessment results."""
+    auth = mobile_permission_required("mobile_view_progress")(request)
+
+    readiness_row = fetchone(
+        "SELECT readiness_percentage FROM view_student_individual_readiness WHERE user_id = %s",
+        [auth.user_id],
+    )
+    results = fetchall(
+        """SELECT ar.id, ar.assessment_id, ar.score, ar.total_items, ar.date_taken,
+                  a.title AS assessment_title, a.type AS assessment_type,
+                  s.name AS subject_name
+           FROM assessment_results ar
+           JOIN assessments a ON a.id = ar.assessment_id
+           LEFT JOIN subjects s ON s.id = a.subject_id
+           WHERE ar.user_id = %s
+           ORDER BY ar.date_taken DESC""",
+        [auth.user_id],
+    )
+    for r in results:
+        r["id"]            = str(r["id"])
+        r["assessment_id"] = str(r["assessment_id"])
+        r["date_taken"]    = r["date_taken"].isoformat()
+
+    return ok({
+        "readiness_percentage": float(readiness_row["readiness_percentage"]) if readiness_row and readiness_row.get("readiness_percentage") else 0,
+        "results": results,
+        "total_assessments_taken": len(results),
+    })

@@ -228,3 +228,40 @@ def permission_required(permission_id: str):
 
         return auth
     return check
+
+
+def mobile_permission_required(permission_id: str):
+    """
+    Route-level permission guard for mobile (student) endpoints.
+
+    Enforces that:
+      1. The user is authenticated (valid JWT).
+      2. The user's role is STUDENT.
+      3. The role has the required permission_id.
+
+    Usage:
+        auth = mobile_permission_required("view_subjects")(request)
+    """
+    def check(request: Request) -> AuthState:
+        from app.db import fetchone as _fetchone
+        auth = login_required(request)
+
+        if auth.role != "STUDENT":
+            raise _http_exc(forbidden("This endpoint is for students only"))
+
+        row = _fetchone(
+            """SELECT r.permissions
+               FROM users u
+               JOIN roles r ON u.role_id = r.id
+               WHERE u.id = %s""",
+            [auth.user_id],
+        )
+        if not row:
+            raise _http_exc(forbidden("Role not found for user"))
+
+        perms = row.get("permissions") or []
+        if permission_id not in perms:
+            raise _http_exc(forbidden(f"Missing permission: {permission_id}"))
+
+        return auth
+    return check

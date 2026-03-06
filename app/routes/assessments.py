@@ -8,7 +8,7 @@ import json
 from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, permission_required
+from app.middleware.auth import login_required, permission_required, mobile_permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import require_fields, clean_str
@@ -374,15 +374,13 @@ async def faculty_delete(request: Request, assess_id: str):
 
 @mobile_assess_router.get("")
 async def mobile_list(request: Request):
-    auth = login_required(request)
-    if auth.role != "STUDENT": return forbidden()
+    auth = mobile_permission_required("mobile_view_assessments")(request)
     return ok(_list(request, "AND a.status = 'APPROVED'"))
 
 
 @mobile_assess_router.get("/{assess_id}")
 async def mobile_get(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "STUDENT": return forbidden()
+    auth = mobile_permission_required("mobile_view_assessments")(request)
     a = fetchone(
         _SELECT_WITH_Q + "WHERE a.id = %s AND a.status = 'APPROVED' GROUP BY a.id, s.name, m.title, u.first_name, u.last_name",
         [assess_id]
@@ -393,8 +391,7 @@ async def mobile_get(request: Request, assess_id: str):
 
 @mobile_assess_router.post("/{assess_id}/submit")
 async def mobile_submit(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "STUDENT": return forbidden()
+    auth = mobile_permission_required("mobile_submit_assessment")(request)
     a = fetchone("SELECT * FROM assessments WHERE id = %s AND status = 'APPROVED'", [assess_id])
     if not a: return not_found("Assessment not found or not available")
 
@@ -446,8 +443,7 @@ async def mobile_submit(request: Request, assess_id: str):
 
 @mobile_assess_router.get("/{assess_id}/result")
 async def mobile_result(request: Request, assess_id: str):
-    auth = login_required(request)
-    if auth.role != "STUDENT": return forbidden()
+    auth = mobile_permission_required("mobile_view_assessments")(request)
     sub = fetchone(
         "SELECT * FROM assessment_results WHERE assessment_id = %s AND user_id = %s ORDER BY date_taken DESC LIMIT 1",
         [assess_id, auth.user_id],

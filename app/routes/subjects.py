@@ -3,7 +3,7 @@ Subjects routes - Admin, Faculty, and Mobile (Student)
 """
 from fastapi import APIRouter, Request
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
-from app.middleware.auth import login_required, permission_required
+from app.middleware.auth import login_required, permission_required, mobile_permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, forbidden
 from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import require_fields, clean_str
@@ -322,3 +322,123 @@ async def resolve_module_subject_admin(request: Request, module_id: str):
     m = fetchone("SELECT id, subject_id, title FROM modules WHERE id = %s", [module_id])
     if not m: return not_found("Module not found")
     return ok({"module_id": str(m["id"]), "subject_id": str(m["subject_id"]), "title": m["title"]})
+
+
+# ═══════════════════════════════════════════════════════════════
+# MOBILE — Student read-only subject & module access
+# All routes enforce mobile_login permission (STUDENT role only).
+# Students only see APPROVED content.
+# ═══════════════════════════════════════════════════════════════
+
+@mobile_subjects_router.get("")
+async def mobile_list_subjects(request: Request):
+    """List all APPROVED subjects for the student."""
+    auth = mobile_permission_required("mobile_view_subjects")(request)
+    page, per_page = get_page_params(request)
+    search = get_search(request)
+    sql = """SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name
+             FROM subjects s LEFT JOIN users u ON u.id = s.created_by
+             WHERE s.status = 'APPROVED'"""
+    params = []
+    if search:
+        sql += " AND LOWER(s.name) LIKE LOWER(%s)"
+        params.append(f"%{search}%")
+    sql += " ORDER BY s.name"
+    from app.db import paginate
+    result = paginate(sql, params, page, per_page)
+    for r in result["items"]:
+        r["id"] = str(r["id"])
+        if r.get("created_by"): r["created_by"] = str(r["created_by"])
+    return ok(result)
+
+
+@mobile_subjects_router.get("/{subject_id}")
+async def mobile_get_subject(request: Request, subject_id: str):
+    """Get a single APPROVED subject with its full module tree."""
+    auth = mobile_permission_required("mobile_view_subjects")(request)
+    subject = fetchone(
+        "SELECT * FROM subjects WHERE id = %s AND status = 'APPROVED'",
+        [subject_id]
+    )
+    if not subject: return not_found("Subject not found")
+    subject["id"] = str(subject["id"])
+    if subject.get("created_by"): subject["created_by"] = str(subject["created_by"])
+    subject["modules"] = _build_module_tree(subject_id, None, "STUDENT")
+    return ok(subject)
+
+
+@mobile_subjects_router.get("/{subject_id}/modules/{module_id}")
+async def mobile_get_module(request: Request, subject_id: str, module_id: str):
+    """Get a single APPROVED module (with its sub-topics)."""
+    auth = mobile_permission_required("mobile_view_modules")(request)
+    m = fetchone(
+        """SELECT t.*, u.first_name || ' ' || u.last_name AS created_by_name
+           FROM modules t LEFT JOIN users u ON u.id = t.created_by
+           WHERE t.id = %s AND t.subject_id = %s AND t.status = 'APPROVED'""",
+        [module_id, subject_id]
+    )
+    if not m: return not_found("Module not found")
+    formatted = _format_module(m)
+    formatted["subTopics"] = _build_module_tree(subject_id, module_id, "STUDENT")
+    return ok(formatted)
+
+# ═══════════════════════════════════════════════════════════════
+# MOBILE — AI Summarize endpoint
+# Proxies to Anthropic server-side so the API key stays secret.
+# ═══════════════════════════════════════════════════════════════
+
+@mobile_subjects_router.post("/ai/summarize")
+async def mobile_ai_summarize(request: Request):
+    """
+    POST /api/mobile/student/subjects/ai/summarize
+    Body: { "title": str, "content": str }
+    Returns: { "success": true, "data": { "summary": str } }
+    """
+    auth = mobile_permission_required("mobile_view_modules")(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    title   = (body.get("title")   or "").strip()
+    content = (body.get("content") or "").strip()
+
+    if not content:
+        return error("No content provided to summarize.", 400)
+
+    import os, httpx
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return error("AI summarization is not configured on this server.", 503)
+
+    prompt = (
+        f'Summarize this study module titled "{title}" '
+        f"in 3–5 concise bullet points for a student studying for their board exam:\n\n"
+        f"{content[:4000]}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key":         api_key,
+                    "anthropic-version":  "2023-06-01",
+                    "content-type":       "application/json",
+                },
+                json={
+                    "model":      "claude-haiku-4-5-20251001",
+                    "max_tokens": 512,
+                    "messages":   [{"role": "user", "content": prompt}],
+                },
+            )
+        data = resp.json()
+        if resp.status_code != 200:
+            return error(data.get("error", {}).get("message", "AI request failed."), 502)
+        summary = "".join(
+            b["text"] for b in (data.get("content") or []) if b.get("type") == "text"
+        )
+        return ok({"summary": summary or "No summary generated."})
+    except Exception as exc:
+        return error(f"AI request failed: {exc}", 502)

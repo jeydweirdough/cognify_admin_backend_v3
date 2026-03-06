@@ -204,7 +204,7 @@ async def admin_list(request: Request):
 
 @admin_whitelist_router.post("")
 async def admin_add(request: Request):
-    auth = permission_required("manage_whitelist_all")(request)
+    auth = permission_required("add_whitelist")(request)
     try:
         body = await request.json()
     except Exception:
@@ -214,7 +214,7 @@ async def admin_add(request: Request):
 
 @admin_whitelist_router.post("/bulk")
 async def admin_bulk(request: Request):
-    auth = permission_required("manage_whitelist_all")(request)
+    auth = permission_required("add_whitelist")(request)
 
     content_type = request.headers.get("content-type", "")
     records = []
@@ -257,7 +257,7 @@ async def admin_bulk(request: Request):
 
 @admin_whitelist_router.put("/{entry_id}")
 async def admin_update(request: Request, entry_id: str):
-    auth = permission_required("manage_whitelist_all")(request)
+    auth = permission_required("edit_whitelist")(request)
     try:
         body = await request.json()
     except Exception:
@@ -267,14 +267,14 @@ async def admin_update(request: Request, entry_id: str):
 
 @admin_whitelist_router.delete("/{entry_id}")
 async def admin_delete(request: Request, entry_id: str):
-    auth = permission_required("manage_whitelist_all")(request)
+    auth = permission_required("delete_whitelist")(request)
     return _delete_entry(entry_id, auth)
 
 
 @admin_whitelist_router.post("/{entry_id}/approve")
 async def admin_approve(request: Request, entry_id: str):
     """Approve a PENDING user — sets status=ACTIVE, records approved_by + approved_at."""
-    auth = permission_required("approve_users")(request)
+    auth = permission_required("edit_users")(request)
     existing = fetchone(
         "SELECT id, email, status FROM users WHERE id = %s AND status = 'PENDING'",
         [entry_id],
@@ -304,7 +304,7 @@ async def faculty_list(request: Request):
 
 @faculty_whitelist_router.post("")
 async def faculty_add(request: Request):
-    auth = permission_required("manage_whitelist_students")(request)
+    auth = permission_required("add_whitelist")(request)
     try:
         body = await request.json()
     except Exception:
@@ -314,7 +314,7 @@ async def faculty_add(request: Request):
 
 @faculty_whitelist_router.put("/{entry_id}")
 async def faculty_update(request: Request, entry_id: str):
-    auth = permission_required("manage_whitelist_students")(request)
+    auth = permission_required("edit_whitelist")(request)
     existing = fetchone("""
         SELECT u.*, r.name AS role
         FROM users u JOIN roles r ON u.role_id = r.id
@@ -331,7 +331,7 @@ async def faculty_update(request: Request, entry_id: str):
 
 @faculty_whitelist_router.delete("/{entry_id}")
 async def faculty_delete(request: Request, entry_id: str):
-    auth = permission_required("manage_whitelist_students")(request)
+    auth = permission_required("delete_whitelist")(request)
     existing = fetchone("""
         SELECT u.*, r.name AS role
         FROM users u JOIN roles r ON u.role_id = r.id
@@ -345,7 +345,7 @@ async def faculty_delete(request: Request, entry_id: str):
 @faculty_whitelist_router.post("/{entry_id}/approve")
 async def faculty_approve(request: Request, entry_id: str):
     """Faculty approves a PENDING student account."""
-    auth = permission_required("approve_users")(request)
+    auth = permission_required("edit_students")(request)
     existing = fetchone("""
         SELECT u.id, u.email, u.status, r.name AS role
         FROM users u JOIN roles r ON u.role_id = r.id

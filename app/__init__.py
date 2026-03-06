@@ -93,6 +93,7 @@ def _register_routers(app: FastAPI):
     from app.routes.content    import admin_content_router, faculty_content_router, mobile_content_router
     from app.routes.assessments import admin_assess_router, faculty_assess_router, mobile_assess_router
     from app.routes.analytics  import admin_dash_router, faculty_dash_router, mobile_prog_router
+    from app.routes.moods      import mobile_moods_router, admin_moods_router, faculty_moods_router
     from app.routes.misc       import (
         settings_router, admin_logs_router,
         admin_rev_router, faculty_rev_router,
@@ -108,6 +109,7 @@ def _register_routers(app: FastAPI):
         admin_content_router, faculty_content_router, mobile_content_router,
         admin_assess_router, faculty_assess_router, mobile_assess_router,
         admin_dash_router, faculty_dash_router, mobile_prog_router,
+        mobile_moods_router, admin_moods_router, faculty_moods_router,
         settings_router, admin_logs_router,
         admin_rev_router, faculty_rev_router,
         admin_verify_router, faculty_verify_router,

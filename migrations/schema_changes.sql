@@ -354,13 +354,13 @@ CREATE INDEX IF NOT EXISTS idx_whitelist_email  ON whitelist(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_whitelist_status ON whitelist(status);
 CREATE INDEX IF NOT EXISTS idx_whitelist_role   ON whitelist(role);
 
--- Backfill: grant granular whitelist permissions to existing roles that have the
--- legacy 'manage_whitelist' permission so the new permission_required() guards work.
+-- Backfill: replace legacy 'manage_whitelist' with granular permissions from permissions.ts
+-- Runs safely on both fresh installs and upgraded DBs (idempotent).
 UPDATE roles
 SET permissions = permissions
-    || '["manage_whitelist_all", "manage_whitelist_students", "view_whitelist"]'::jsonb
+    || '["view_whitelist","add_whitelist","edit_whitelist","delete_whitelist","cross_check_whitelist","students_whitelist_only"]'::jsonb
 WHERE permissions @> '"manage_whitelist"'
-  AND NOT (permissions @> '"manage_whitelist_all"');
+  AND NOT (permissions @> '"view_whitelist"');
 -- ── Sign-Up Feature: allow PENDING users to set their password via the web ────
 -- The `can_signup` permission is stored in roles.permissions (JSONB).
 -- A user pre-created by an Admin with status='PENDING' (no password yet) can
@@ -385,11 +385,7 @@ SET permissions = permissions || '["can_signup"]'::jsonb
 WHERE name IN ('FACULTY', 'STUDENT')
   AND NOT (permissions @> '"can_signup"'::jsonb);
 
--- Grant approve_users to existing ADMIN roles that don't already have it
-UPDATE roles
-SET permissions = permissions || '["approve_users"]'::jsonb
-WHERE name = 'ADMIN'
-  AND NOT (permissions @> '"approve_users"'::jsonb);
+-- Note: approve_users was removed from permissions.ts. Approving accounts uses edit_users.
 -- ── Registration tracking fields ──────────────────────────────────────────────
 -- registration_type: how the account was created
 --   'SELF_REGISTERED' = user filled the sign-up form themselves
@@ -409,3 +405,25 @@ ALTER TABLE users
 CREATE INDEX IF NOT EXISTS idx_users_registration_type ON users(registration_type);
 CREATE INDEX IF NOT EXISTS idx_users_added_by          ON users(added_by);
 CREATE INDEX IF NOT EXISTS idx_users_approved_by       ON users(approved_by);
+-- ── Student Mood Tracking ──────────────────────────────────────────────────────
+-- Stores one mood entry per student per date (upsert on conflict).
+-- mood_key matches the MoodKey type in mobile/constants/moods.ts:
+--   joy | sad | anger | disgust | fear | anxiety | envy | ennui | embarrassment
+-- source: 'home' = picked on the Home tab, 'calendar' = picked on the Calendar tab
+
+CREATE TABLE IF NOT EXISTS student_moods (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mood_date  DATE        NOT NULL,
+    mood_key   VARCHAR(20) NOT NULL
+                CHECK (mood_key IN ('joy','sad','anger','disgust','fear','anxiety','envy','ennui','embarrassment')),
+    source     VARCHAR(20) NOT NULL DEFAULT 'home'
+                CHECK (source IN ('home','calendar')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, mood_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_student_moods_user    ON student_moods(user_id);
+CREATE INDEX IF NOT EXISTS idx_student_moods_date    ON student_moods(mood_date);
+CREATE INDEX IF NOT EXISTS idx_student_moods_key     ON student_moods(mood_key);

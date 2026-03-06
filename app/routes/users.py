@@ -193,8 +193,9 @@ async def admin_update_status(request: Request, user_id: str):
     existing = fetchone("SELECT id, email, status FROM users WHERE id = %s", [user_id])
     if not existing: return not_found()
 
-    # Approving a pending signup uses approve_users; toggling active/removed uses edit_users
-    required_perm = "approve_users" if existing["status"] == "PENDING" and new_status == "ACTIVE" else "edit_users"
+    # All status changes (including PENDING → ACTIVE approval) use edit_users.
+    # There is no separate approve_users permission in permissions.ts.
+    required_perm = "edit_users"
     auth = permission_required(required_perm)(request)
 
     execute("UPDATE users SET status = %s WHERE id = %s", [new_status, user_id])

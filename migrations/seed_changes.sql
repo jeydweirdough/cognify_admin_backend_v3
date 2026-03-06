@@ -43,30 +43,62 @@ INSERT INTO system_settings (
 -- ────────────────────────────────────────────────────────────
 INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
 
--- ── ADMIN: all 33 permissions ─────────────────────────────────────────────
+-- ── ADMIN: full access — all permissions sourced from frontend/permissions.ts ─
+-- Modules: dashboard (admin), curriculum, modules, verification, assessments,
+--          revisions, analytics, users, students, whitelist, roles, security,
+--          settings, authentication (web_login only — admins don't use mobile).
 (
   '00000000-0000-0000-0000-000000000001',
   'ADMIN',
-  '["view_dashboard","view_subjects","create_subjects","edit_subjects","delete_subjects","view_content","create_content","edit_content","delete_content","verify_resources","view_assessments","create_assessments","edit_assessments","delete_assessments","view_revisions","resolve_revisions","view_analytics","view_student_analytics","export_analytics","view_users","create_users","edit_users","approve_users","delete_users","view_whitelist","manage_whitelist","view_roles","manage_roles","view_logs","export_logs","view_settings","edit_settings","manage_backup","import_settings"]'::jsonb,
+  '["view_admin_dashboard","view_subjects","create_subjects","edit_subjects","delete_subjects","view_content","create_content","edit_content","delete_content","view_verification","approve_verification","reject_verification","view_assessments","create_assessments","edit_assessments","delete_assessments","view_revisions","resolve_revisions","view_analytics","view_student_analytics","view_users","create_users","edit_users","delete_users","view_students_nav","view_students","create_students","edit_students","delete_students","view_whitelist","add_whitelist","edit_whitelist","delete_whitelist","cross_check_whitelist","students_whitelist_only","view_roles","manage_roles","view_logs","view_settings","edit_settings","manage_backup","import_settings","web_login"]'::jsonb,
   TRUE, NOW()
 ),
 
--- ── FACULTY: 15 permissions — curriculum, content, assessments, students ──
--- Excluded: delete_*, resolve_revisions, user management, roles,
---           security logs, system settings, export_analytics
+-- ── FACULTY: scoped to curriculum, content, assessments, student management,
+--   and student-only whitelist. Web app only (web_login).
+--   Excluded: delete_*, admin dashboard, admin user-mgmt, roles, security logs,
+--             system settings, full whitelist cross-check (admin only).
 (
   '00000000-0000-0000-0000-000000000002',
   'FACULTY',
-  '["view_dashboard","view_subjects","edit_subjects","view_content","create_content","edit_content","verify_resources","view_assessments","create_assessments","edit_assessments","view_revisions","view_analytics","view_student_analytics","view_whitelist","manage_whitelist","can_signup"]'::jsonb,
+  '["view_faculty_dashboard","view_subjects","create_subjects","edit_subjects","view_content","create_content","edit_content","view_verification","approve_verification","reject_verification","view_assessments","create_assessments","edit_assessments","view_revisions","view_analytics","view_student_analytics","view_students_nav","view_students","create_students","edit_students","view_whitelist","add_whitelist","edit_whitelist","cross_check_whitelist","students_whitelist_only","web_login","can_signup"]'::jsonb,
   TRUE, NOW()
 ),
 
--- ── STUDENT: can_signup only — student sets password via web signup form,
---             then uses the mobile app. Account stays PENDING until admin activates.
+-- ── STUDENT: mobile-only role.
+--   Each permission corresponds to one checkbox in Role Access Control.
+--   mobile_login          → master gate: log in via mobile app
+--   can_signup            → pre-created PENDING student can set their own password
+--   --- Home Tab ---
+--   mobile_view_home      → view home screen (readiness, quick actions)
+--   mobile_save_mood      → save/update today's mood entry
+--   mobile_delete_mood    → delete today's mood entry
+--   --- Subjects ---
+--   mobile_view_subjects  → browse subjects list + subject detail
+--   --- Modules ---
+--   mobile_view_modules   → read module text / PDF materials
+--   mobile_track_recent_module → record recently viewed module
+--   --- Assessments ---
+--   mobile_view_assessments   → list assessments + view past results
+--   mobile_submit_assessment  → submit answers and save result to DB
+--   --- Progress ---
+--   mobile_view_progress  → view readiness % and per-subject breakdown
+--   --- Calendar & To-Do ---
+--   mobile_view_calendar  → view study calendar with mood history
+--   mobile_save_calendar_mood → save/update mood on a calendar date
+--   mobile_add_session    → log a new study session to to-do list
+--   --- Profile ---
+--   mobile_view_profile   → view profile info, avatar, stats
+--   mobile_edit_profile   → edit personal note and daily goal
+--   --- Diagnostic ---
+--   mobile_view_diagnostic   → view diagnostic intro + questions
+--   mobile_submit_diagnostic → submit diagnostic answers (sets baseline)
+--   --- Personal Space ---
+--   mobile_view_binder    → access binders and saved notes
 (
   '00000000-0000-0000-0000-000000000003',
   'STUDENT',
-  '["can_signup"]'::jsonb,
+  '["mobile_login","can_signup","mobile_view_home","mobile_save_mood","mobile_delete_mood","mobile_view_subjects","mobile_view_modules","mobile_track_recent_module","mobile_view_assessments","mobile_submit_assessment","mobile_view_progress","mobile_view_calendar","mobile_save_calendar_mood","mobile_add_session","mobile_view_profile","mobile_edit_profile","mobile_view_diagnostic","mobile_submit_diagnostic","mobile_view_binder"]'::jsonb,
   TRUE, NOW()
 )
 
