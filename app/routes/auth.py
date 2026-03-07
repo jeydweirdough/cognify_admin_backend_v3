@@ -93,13 +93,19 @@ def _do_login(user, allowed_roles: list[str]):
 
 def _build_login_response(user):
     execute("UPDATE users SET last_login = NOW() WHERE id = %s", [user["id"]])
+    
+    # Fetch permissions from the user's role
+    role_row = fetchone("SELECT permissions FROM roles WHERE name = %s", [user["role"]])
+    permissions = role_row.get("permissions") or [] if role_row else []
+    
     payload = {
         "id":           str(user["id"]),
         "email":        user["email"],
         "first_name":   user["first_name"],
         "last_name":    user["last_name"],
         "role":         user["role"],
-        "cvsu_id": user.get("cvsu_id"),
+        "cvsu_id":      user.get("cvsu_id"),
+        "permissions":  permissions,
     }
     response = JSONResponse({"success": True, "message": "Login successful", "data": payload})
     set_auth_cookies(response, str(user["id"]), user["role"])
@@ -109,23 +115,9 @@ def _build_login_response(user):
 
 def _register(body: dict, expected_role: str):
     """
-    Registration algorithm:
-
-    CASE 1 — Admin-pre-added user completing their account:
-      - Admin previously added the user via the whitelist panel.
-      - A row exists in `users` with registration_type='MANUALLY_ADDED',
-        status='PENDING', and a placeholder password.
-      - The user now signs up with their real password.
-      - Result: password is set, status → ACTIVE. User can log in immediately.
-
-    CASE 2 — Self-registration (new user, not pre-added):
-      - No matching row in `users` for this email.
-      - A new row is created with registration_type='SELF_REGISTERED', status='PENDING'.
-      - Result: account is created but PENDING. Admin must approve before login.
-
-    CASE 3 — Already fully registered:
-      - A row exists with status='ACTIVE' (already completed registration).
-      - Return 409 — account already exists.
+    Registration (mobile):
+      1. If email+cvsu_id match a PENDING whitelist entry → create user ACTIVE.
+      2. Otherwise → create user as PENDING (admin must approve).
     """
     required = ["cvsu_id", "first_name", "last_name", "email", "password"]
     missing = require_fields(body, required)
@@ -140,97 +132,74 @@ def _register(body: dict, expected_role: str):
     if pw_err:
         return error(pw_err)
 
-    # Hash the real password up front
     hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
 
-    # Resolve role
+    # ── Guard: duplicate account ───────────────────────────────────────────────
+    if fetchone("SELECT id FROM users WHERE LOWER(email) = %s AND status != 'REMOVED'", [email]):
+        return error("An account with this email is already registered. Please log in.", 409)
+
+    # ── Resolve role_id ────────────────────────────────────────────────────────
     role_row = fetchone("SELECT id FROM roles WHERE name = %s", [expected_role])
     if not role_row:
         return error("Role configuration error. Contact admin.", 500)
-    role_id = role_row["id"]
 
-    # ── Look up any existing user row by email only ───────────────────────────
-    # We search by email alone (not email+cvsu_id) because admin-added rows are
-    # keyed by email — the cvsu_id they entered at signup is the source of truth.
-    entry = fetchone(
-        """SELECT u.id, u.status, u.registration_type, r.name AS role
-           FROM users u
-           JOIN roles r ON u.role_id = r.id
-           WHERE LOWER(u.email) = %s""",
-        [email],
+    # ── Check whitelist ────────────────────────────────────────────────────────
+    wl_entry = fetchone(
+        """SELECT * FROM whitelist
+           WHERE LOWER(email) = %s
+             AND LOWER(institutional_id) = LOWER(%s)
+             AND status = 'PENDING'""",
+        [email, clean_str(body["cvsu_id"])],
     )
 
-    # ── CASE 3: Already a fully active/registered account ────────────────────
-    if entry and entry["status"] == "ACTIVE":
-        return error("An account with this email is already registered. Please log in.", 409)
-
-    # Guard: if a row exists for a different role, block cross-role signup
-    if entry and entry["role"] != expected_role:
-        wrong = "the mobile app" if expected_role == "STUDENT" else "the web application"
-        return error(
-            f"This email is registered as {entry['role']}. Please use {wrong}.",
-            403,
-        )
-
-    # ── CASE 1: Admin pre-added user completing their account ─────────────────
-    if entry and entry["registration_type"] == "MANUALLY_ADDED" and entry["status"] == "PENDING":
-        # Overwrite the placeholder password, fill in the real personal details,
-        # and immediately activate the account — no admin approval needed.
+    if wl_entry and wl_entry["role"] == expected_role:
+        # Pre-approved via whitelist → create as ACTIVE
         user = execute_returning(
-            """UPDATE users
-               SET cvsu_id      = %s,
-                   first_name   = %s,
-                   middle_name  = %s,
-                   last_name    = %s,
-                   password     = %s,
-                   department   = %s,
-                   status       = 'ACTIVE'
-               WHERE id = %s
+            """INSERT INTO users
+                   (cvsu_id, first_name, middle_name, last_name,
+                    email, password, role_id, status, registration_type, added_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', 'SELF_REGISTERED', %s)
                RETURNING id, first_name, last_name, email, status""",
             [
                 clean_str(body["cvsu_id"]),
                 clean_str(body["first_name"]),
                 clean_str(body.get("middle_name")),
                 clean_str(body["last_name"]),
+                email,
                 hashed,
-                clean_str(body.get("department")),
-                entry["id"],
+                role_row["id"],
+                str(wl_entry["added_by"]) if wl_entry.get("added_by") else None,
             ],
         )
-        log_action(f"{expected_role} completed admin-added registration", email, str(user["id"]))
+        execute("UPDATE whitelist SET status = 'REGISTERED' WHERE id = %s", [wl_entry["id"]])
+        log_action(f"{expected_role} registered via whitelist", email, str(user["id"]))
         return created(
             {"id": str(user["id"]), "email": user["email"], "status": "ACTIVE"},
-            "Account setup complete. You can now log in.",
+            "Account created successfully. You can now log in.",
         )
-
-    # ── CASE 2: Self-registration — brand new user ────────────────────────────
-    # Check for duplicate cvsu_id to prevent ID collision
-    if fetchone("SELECT id FROM users WHERE LOWER(cvsu_id) = LOWER(%s)", [body["cvsu_id"]]):
-        return error("This student ID is already associated with another account.", 409)
-
-    user = execute_returning(
-        """INSERT INTO users
-               (cvsu_id, first_name, middle_name, last_name,
-                email, password, role_id, status, department, registration_type)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING', %s, 'SELF_REGISTERED')
-           RETURNING id, first_name, last_name, email, status""",
-        [
-            clean_str(body["cvsu_id"]),
-            clean_str(body["first_name"]),
-            clean_str(body.get("middle_name")),
-            clean_str(body["last_name"]),
-            email,
-            hashed,
-            role_id,
-            clean_str(body.get("department")),
-        ],
-    )
-
-    log_action(f"{expected_role} self-registered — awaiting admin approval", email, str(user["id"]))
-    return created(
-        {"id": str(user["id"]), "email": user["email"], "status": "PENDING"},
-        "Registration submitted. Your account is pending administrator approval.",
-    )
+    else:
+        # Not in whitelist → create as PENDING, admin must approve
+        user = execute_returning(
+            """INSERT INTO users
+                   (cvsu_id, first_name, middle_name, last_name,
+                    email, password, role_id, status, registration_type)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING', 'SELF_REGISTERED')
+               RETURNING id, first_name, last_name, email, status""",
+            [
+                clean_str(body["cvsu_id"]),
+                clean_str(body["first_name"]),
+                clean_str(body.get("middle_name")),
+                clean_str(body["last_name"]),
+                email,
+                hashed,
+                role_row["id"],
+            ],
+        )
+        log_action(f"{expected_role} self-registered (pending approval)", email, str(user["id"]))
+        return created(
+            {"id": str(user["id"]), "email": user["email"], "status": "PENDING"},
+            "Your account has been submitted for review. An administrator will approve it shortly.",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -239,7 +208,6 @@ def _register(body: dict, expected_role: str):
 
 @web_auth_router.post("/login")
 async def web_login(request: Request):
-    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     try:
         body = await request.json()
     except Exception:
@@ -403,14 +371,13 @@ async def get_signup_roles(request: Request):
 @web_auth_router.post("/signup")
 async def web_signup(request: Request):
     """
-    Self-registration — anyone can sign up; account is created as PENDING.
+    Self-registration for web (FACULTY / any role with can_signup).
 
-    Algorithm:
-      1. Validate required fields: first_name, last_name, email, cvsu_id, password, role.
+    Flow:
+      1. Validate required fields.
       2. Role must exist and have `can_signup` in its permissions.
-      3. Email must not already be registered.
-      4. Create user in `users` table with status = 'PENDING' and no session cookie.
-      5. Admin must set status = 'ACTIVE' before the user can log in.
+      3. If email+cvsu_id match a PENDING whitelist entry → create user as ACTIVE.
+      4. Otherwise → create user as PENDING (admin must approve before login).
     """
     try:
         body = await request.json()
@@ -419,7 +386,6 @@ async def web_signup(request: Request):
 
     import json as _json
 
-    # 1. Required fields
     required = ["first_name", "last_name", "email", "cvsu_id", "password", "role"]
     missing = require_fields(body, required)
     if missing:
@@ -435,7 +401,7 @@ async def web_signup(request: Request):
 
     role_name = body["role"].strip().upper()
 
-    # 2. Role must exist and allow self-signup
+    # Role must exist and allow self-signup
     role_row = fetchone(
         "SELECT id, name, permissions FROM roles WHERE name = %s",
         [role_name],
@@ -449,40 +415,76 @@ async def web_signup(request: Request):
     if "can_signup" not in (perms or []):
         return error("Self-registration is not enabled for this role. Please contact your administrator.", 403)
 
-    # 3. Duplicate check
-    if fetchone("SELECT id FROM users WHERE LOWER(email) = %s", [email]):
-        return error("An account with this email already exists. Please log in or contact your administrator.", 409)
+    # Duplicate account guard
+    if fetchone("SELECT id FROM users WHERE LOWER(email) = %s AND status != 'REMOVED'", [email]):
+        return error("An account with this email already exists. Please log in.", 409)
 
-    # 4. Create PENDING user — no password hash needed for login since status = PENDING blocks it
+    # ── Check whitelist ────────────────────────────────────────────────────────
+    wl_entry = fetchone(
+        """SELECT * FROM whitelist
+           WHERE LOWER(email) = %s
+             AND LOWER(institutional_id) = LOWER(%s)
+             AND role = %s
+             AND status = 'PENDING'""",
+        [email, clean_str(body["cvsu_id"]), role_name],
+    )
+
     hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
 
-    user = execute_returning(
-        """INSERT INTO users
-               (cvsu_id, first_name, middle_name, last_name,
-                email, password, role_id, status, department,
-                registration_type, added_by)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING', %s,
-                   'SELF_REGISTERED', NULL)
-           RETURNING id, first_name, last_name, email, status""",
-        [
-            clean_str(body["cvsu_id"]),
-            clean_str(body["first_name"]),
-            clean_str(body.get("middle_name")),
-            clean_str(body["last_name"]),
-            email,
-            hashed,
-            role_row["id"],
-            clean_str(body.get("department")),
-        ],
-    )
-
-    log_action("User self-registered — awaiting admin approval", email, str(user["id"]))
-
-    # 5. Return 201 — no session cookie; user cannot log in until approved
-    return created(
-        {"id": str(user["id"]), "email": email, "status": "PENDING"},
-        "Registration complete! Your account is pending administrator approval. You will be notified once access is granted.",
-    )
+    if wl_entry:
+        # Pre-approved via whitelist → create as ACTIVE
+        user = execute_returning(
+            """INSERT INTO users
+                   (cvsu_id, first_name, middle_name, last_name,
+                    email, password, role_id, status, department,
+                    registration_type, added_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s,
+                       'SELF_REGISTERED', %s)
+               RETURNING id, first_name, last_name, email, status""",
+            [
+                clean_str(body["cvsu_id"]),
+                clean_str(body["first_name"]),
+                clean_str(body.get("middle_name")),
+                clean_str(body["last_name"]),
+                email,
+                hashed,
+                role_row["id"],
+                clean_str(body.get("department")),
+                str(wl_entry["added_by"]) if wl_entry.get("added_by") else None,
+            ],
+        )
+        execute("UPDATE whitelist SET status = 'REGISTERED' WHERE id = %s", [wl_entry["id"]])
+        log_action("User registered via whitelist", email, str(user["id"]))
+        return created(
+            {"id": str(user["id"]), "email": email, "status": "ACTIVE"},
+            "Account created successfully. You can now log in.",
+        )
+    else:
+        # Not in whitelist → create as PENDING, admin must approve
+        user = execute_returning(
+            """INSERT INTO users
+                   (cvsu_id, first_name, middle_name, last_name,
+                    email, password, role_id, status, department,
+                    registration_type)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING', %s,
+                       'SELF_REGISTERED')
+               RETURNING id, first_name, last_name, email, status""",
+            [
+                clean_str(body["cvsu_id"]),
+                clean_str(body["first_name"]),
+                clean_str(body.get("middle_name")),
+                clean_str(body["last_name"]),
+                email,
+                hashed,
+                role_row["id"],
+                clean_str(body.get("department")),
+            ],
+        )
+        log_action("User self-registered (pending approval)", email, str(user["id"]))
+        return created(
+            {"id": str(user["id"]), "email": email, "status": "PENDING"},
+            "Your account has been submitted for review. An administrator will approve it shortly.",
+        )
 
 
 async def web_sync_permissions(request: Request):

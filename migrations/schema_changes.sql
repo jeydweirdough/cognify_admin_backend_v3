@@ -10,16 +10,19 @@ CREATE TABLE IF NOT EXISTS roles (
 
 CREATE TABLE IF NOT EXISTS users (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    cvsu_id 		 VARCHAR(100),
-	first_name       VARCHAR(100) NOT NULL,
+    cvsu_id          VARCHAR(100),
+    first_name       VARCHAR(100) NOT NULL,
     middle_name      VARCHAR(100),
     last_name        VARCHAR(100) NOT NULL,
     email            VARCHAR(255) NOT NULL UNIQUE,
     password         VARCHAR(255) NOT NULL,
     role_id          UUID         NOT NULL REFERENCES roles(id),
-    status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
-                     CHECK (status IN ('PENDING','ACTIVE','REGISTERED','REMOVED')),
+
+    status           VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE'
+                     CHECK (status IN ('ACTIVE','REMOVED','PENDING')),
+
     department       VARCHAR(150),
+
     last_login       TIMESTAMPTZ,
     date_created     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -72,18 +75,31 @@ CREATE INDEX IF NOT EXISTS idx_modules_creator ON modules(created_by);
 CREATE TABLE IF NOT EXISTS assessments (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     title       VARCHAR(300) NOT NULL,
+
     type        VARCHAR(30)  NOT NULL
-                CHECK (type IN ('PRE_ASSESSMENT','QUIZ','POST_ASSESSMENT')),
+                CHECK (type IN (
+                    'DIAGNOSTIC',
+                    'PRE_ASSESSMENT',
+                    'QUIZ',
+                    'PRACTICE_TEST',
+                    'MOCK_EXAM',
+                    'POST_ASSESSMENT',
+                    'FINAL_ASSESSMENT'
+                )),
+
     subject_id  UUID         REFERENCES subjects(id)  ON DELETE SET NULL,
     module_id   UUID         REFERENCES modules(id)   ON DELETE SET NULL,
     
     items       INT          NOT NULL DEFAULT 0,
+
     status      VARCHAR(30)  NOT NULL DEFAULT 'DRAFT'
                 CHECK (status IN (
                     'DRAFT','PENDING','APPROVED',
                     'REJECTED','REVISION_REQUESTED'
                 )),
+
     author_id   UUID         REFERENCES users(id) ON DELETE SET NULL,
+
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -337,16 +353,22 @@ $$ LANGUAGE plpgsql;
 -- On registration, auth.py checks this table and marks status='REGISTERED'.
 CREATE TABLE IF NOT EXISTS whitelist (
     id               UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+
     first_name       VARCHAR(100) NOT NULL,
     middle_name      VARCHAR(100),
     last_name        VARCHAR(100) NOT NULL,
-    institutional_id VARCHAR(100) NOT NULL,
+
+    institutional_id VARCHAR(100) NOT NULL UNIQUE,
     email            VARCHAR(255) NOT NULL UNIQUE,
+
     role             VARCHAR(20)  NOT NULL DEFAULT 'STUDENT'
-                     CHECK (role IN ('STUDENT', 'FACULTY', 'ADMIN')),
+                     CHECK (role IN ('STUDENT','FACULTY','ADMIN')),
+
     status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
-                     CHECK (status IN ('PENDING', 'REGISTERED')),
+                     CHECK (status IN ('PENDING','REGISTERED')),
+
     added_by         UUID         REFERENCES users(id) ON DELETE SET NULL,
+
     date_added       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
