@@ -2,6 +2,9 @@
 
 A role-aware REST API for the BS Psychology Learning Management System, serving both a **web dashboard** (Admin & Faculty) and a **mobile app** (Students).
 
+command to freeze:
+pip-compile requirements.in -o requirements.txt
+
 ---
 
 ## Stack
