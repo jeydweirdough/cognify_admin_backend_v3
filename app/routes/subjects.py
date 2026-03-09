@@ -334,7 +334,7 @@ async def resolve_module_subject_admin(request: Request, module_id: str):
 async def mobile_list_subjects(request: Request):
     """List all APPROVED subjects for the student."""
     auth = mobile_permission_required("mobile_view_subjects")(request)
-    page, per_page = get_page_params(request)
+    page, per_page = get_page_params(request, default_per_page=50, max_per_page=200)
     search = get_search(request)
     sql = """SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name
              FROM subjects s LEFT JOIN users u ON u.id = s.created_by
@@ -349,6 +349,11 @@ async def mobile_list_subjects(request: Request):
     for r in result["items"]:
         r["id"] = str(r["id"])
         if r.get("created_by"): r["created_by"] = str(r["created_by"])
+        # Include module and ebook counts (APPROVED only for students)
+        cnt_mod   = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'MODULE'  AND status = 'APPROVED'", [r["id"]])
+        cnt_ebook = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'E-BOOK' AND status = 'APPROVED'", [r["id"]])
+        r["module_count"] = cnt_mod["c"]   if cnt_mod   else 0
+        r["ebook_count"]  = cnt_ebook["c"] if cnt_ebook else 0
     return ok(result)
 
 
