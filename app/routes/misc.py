@@ -179,21 +179,63 @@ async def delete_role(request: Request, role_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_verification_queue(user_id=None):
-    """Fetches all PENDING items from the view_change_comparisons."""
-    sql = "SELECT * FROM view_change_comparisons WHERE status = 'PENDING'"
-    params = []
-    
+    """Fetches all PENDING items from the view_change_comparisons + new pending modules."""
+    # 1. Standard Request Changes (Submissions for edits/deletions)
+    sql_changes = "SELECT * FROM view_change_comparisons WHERE status = 'PENDING'"
+    params_changes = []
     if user_id:
-        sql += " AND created_by = %s"
-        params.append(user_id)
+        sql_changes += " AND created_by = %s"
+        params_changes.append(user_id)
+    
+    queue = fetchall(sql_changes, params_changes)
+
+    # 2. Direct submissions for new content (status='PENDING' in modules)
+    # These are new modules that haven't been approved yet.
+    sql_new_modules = """
+        SELECT 
+            m.id AS request_id,
+            m.id AS entity_id,
+            'MODULE' AS entity_module,
+            jsonb_build_object(
+                'title', m.title, 
+                'description', m.description, 
+                'content', m.content, 
+                'format', m.format, 
+                'file_url', m.file_url, 
+                'file_name', m.file_name,
+                'action', 'CREATE_MODULE'
+            ) AS proposed_data,
+            m.created_by,
+            u.first_name || ' ' || u.last_name AS author_name,
+            m.status,
+            m.created_at,
+            NULL::jsonb AS live_data,
+            m.subject_id
+        FROM modules m
+        LEFT JOIN users u ON m.created_by = u.id
+        WHERE m.status = 'PENDING'
+    """
+    params_new = []
+    if user_id:
+        sql_new_modules += " AND m.created_by = %s"
+        params_new.append(user_id)
         
-    sql += " ORDER BY created_at DESC"
-    queue = fetchall(sql, params)
+    new_modules = fetchall(sql_new_modules, params_new)
+    
+    # Combine both
+    queue.extend(new_modules)
+    
+    # Sort by date
+    queue.sort(key=lambda x: x['created_at'], reverse=True)
     
     for item in queue:
         for key in ["request_id", "entity_id", "created_by", "subject_id"]:
             if item.get(key): item[key] = str(item[key])
-        if item.get("created_at"): item["created_at"] = item["created_at"].isoformat()
+        if item.get("created_at"): 
+            if hasattr(item["created_at"], 'isoformat'):
+                item["created_at"] = item["created_at"].isoformat()
+            else:
+                item["created_at"] = str(item["created_at"])
 
         # For assessments, enrich live_data with the current questions from the questions table
         if item.get("entity_module") == "ASSESSMENT" and item.get("entity_id"):
@@ -238,6 +280,13 @@ async def faculty_get_queue(request: Request):
 async def approve_request_change(request: Request, request_id: str):
     auth = permission_required("approve_verification")(request)
     
+    # 1. Check modules table first (Direct submission)
+    mod = fetchone("SELECT id FROM modules WHERE id = %s AND status = 'PENDING'", [request_id])
+    if mod:
+        execute("UPDATE modules SET status = 'APPROVED' WHERE id = %s", [request_id])
+        return ok({"status": "APPROVED", "module_id": request_id})
+
+    # 2. Otherwise check request_changes (Edits/Deletions)
     req = fetchone("SELECT * FROM request_changes WHERE id = %s AND status = 'PENDING'", [request_id])
     if not req: return not_found("Pending request not found")
     
@@ -294,10 +343,17 @@ async def approve_request_change(request: Request, request_id: str):
 
     elif req["type"] == "ASSESSMENT" and action == "DELETE_ASSESSMENT":
         execute("DELETE FROM assessments WHERE id = %s", [target_id])
+    # 4. Handle Direct New Module Approvals
+    elif req.get("action") == "CREATE_MODULE":
+        execute("UPDATE modules SET status = 'APPROVED' WHERE id = %s", [request_id])
+    
     else:
         return error("Unsupported request type or action", 400)
     
-    execute("UPDATE request_changes SET status = 'APPROVED' WHERE id = %s", [request_id])
+    # Only update request_changes table if it's a real request_change row
+    # (New modules use their own ID as request_id, which isn't in request_changes)
+    if fetchone("SELECT id FROM request_changes WHERE id = %s", [request_id]):
+        execute("UPDATE request_changes SET status = 'APPROVED' WHERE id = %s", [request_id])
     
 
 @admin_verify_router.post("/requests/{request_id}/reject")
@@ -307,6 +363,14 @@ async def reject_request_change(request: Request, request_id: str):
     except Exception: body = {}
     note = (body.get("note") or body.get("notes") or "").strip()
 
+    # 1. Check modules table first (Direct submission rejection)
+    mod = fetchone("SELECT id FROM modules WHERE id = %s AND status = 'PENDING'", [request_id])
+    if mod:
+        # For new modules, rejection means back to DRAFT with a Note
+        execute("UPDATE modules SET status = 'REVISION_REQUESTED', description = COALESCE(%s, description) WHERE id = %s", [f"{note}", request_id])
+        return ok({"status": "REVISION_REQUESTED"})
+
+    # 2. Check request_changes (Edits rejection)
     req = fetchone("SELECT revisions_list, target_id, type FROM request_changes WHERE id = %s", [request_id])
     if not req: return not_found("Request not found")
 

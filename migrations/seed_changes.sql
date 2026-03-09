@@ -194,25 +194,6 @@ INSERT INTO users (
 )
 ON CONFLICT (id) DO NOTHING;
 
--- ────────────────────────────────────────────────────────────
--- 3.5 WHITELIST (sample entries)
--- Add two sample whitelist rows for demo/testing.
--- ────────────────────────────────────────────────────────────
-INSERT INTO whitelist (
-    id, first_name, middle_name, last_name,
-    institutional_id, email, role, status, added_by, date_added
-) VALUES
-(
-  '20000000-0000-0000-0000-000000000001',
-  'Juan', NULL, 'Dela Cruz',
-  '2024-PSY-WL-001', 'juan.delacruz@example.edu', 'STUDENT', 'PENDING', '10000000-0000-0000-0000-000000000001', NOW()
-),
-(
-  '20000000-0000-0000-0000-000000000002',
-  'Maria', 'L.', 'Santos',
-  '2024-PSY-WL-002', 'maria.santos@example.edu', 'STUDENT', 'PENDING', '10000000-0000-0000-0000-000000000001', NOW()
-)
-ON CONFLICT (id) DO NOTHING;
 
 -- ────────────────────────────────────────────────────────────
 -- 4. SUBJECTS

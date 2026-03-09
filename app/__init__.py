@@ -90,6 +90,7 @@ def _register_routers(app: FastAPI):
     from app.routes.auth              import web_auth_router, mobile_auth_router
     from app.routes.whitelist         import admin_whitelist_router, faculty_whitelist_router
     from app.routes.users      import admin_users_router, faculty_users_router
+    from app.routes.profile    import mobile_profile_router
     from app.routes.subjects   import admin_subjects_router, faculty_subjects_router, mobile_subjects_router
     from app.routes.content    import admin_content_router, faculty_content_router, mobile_content_router
     from app.routes.assessments import admin_assess_router, faculty_assess_router, mobile_assess_router
@@ -106,6 +107,7 @@ def _register_routers(app: FastAPI):
         web_auth_router, mobile_auth_router,
         admin_whitelist_router, faculty_whitelist_router,
         admin_users_router, faculty_users_router,
+        mobile_profile_router,
         admin_subjects_router, faculty_subjects_router, mobile_subjects_router,
         admin_content_router, faculty_content_router, mobile_content_router,
         admin_assess_router, faculty_assess_router, mobile_assess_router,

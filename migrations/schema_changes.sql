@@ -427,6 +427,16 @@ ALTER TABLE users
 CREATE INDEX IF NOT EXISTS idx_users_registration_type ON users(registration_type);
 CREATE INDEX IF NOT EXISTS idx_users_added_by          ON users(added_by);
 CREATE INDEX IF NOT EXISTS idx_users_approved_by       ON users(approved_by);
+-- ── Student profile fields (mobile) ──────────────────────────────────────────
+-- username:      optional display name chosen during onboarding
+-- daily_goal:    e.g. "1 - 2 hours"
+-- personal_note: short motivational note the user sets on their profile screen
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS username      VARCHAR(150),
+  ADD COLUMN IF NOT EXISTS daily_goal    VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS personal_note TEXT;
+
 -- ── Student Mood Tracking ──────────────────────────────────────────────────────
 -- Stores one mood entry per student per date (upsert on conflict).
 -- mood_key matches the MoodKey type in mobile/constants/moods.ts:

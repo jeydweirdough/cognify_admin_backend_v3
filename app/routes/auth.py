@@ -147,13 +147,12 @@ def _register(body: dict, expected_role: str):
     wl_entry = fetchone(
         """SELECT * FROM whitelist
            WHERE LOWER(email) = %s
-             AND LOWER(institutional_id) = LOWER(%s)
-             AND status = 'PENDING'""",
+             AND LOWER(institutional_id) = LOWER(%s)""",
         [email, clean_str(body["cvsu_id"])],
     )
 
-    if wl_entry and wl_entry["role"] == expected_role:
-        # Pre-approved via whitelist → create as ACTIVE
+    if wl_entry:
+        # Pre-approved via whitelist → create as ACTIVE (regardless of current status)
         user = execute_returning(
             """INSERT INTO users
                    (cvsu_id, first_name, middle_name, last_name,
@@ -171,11 +170,40 @@ def _register(body: dict, expected_role: str):
                 str(wl_entry["added_by"]) if wl_entry.get("added_by") else None,
             ],
         )
-        execute("UPDATE whitelist SET status = 'REGISTERED' WHERE id = %s", [wl_entry["id"]])
+        # Sync whitelist entry with names the student actually submitted, then mark registered
+        execute(
+            """UPDATE whitelist
+               SET first_name = %s, middle_name = %s, last_name = %s, status = 'REGISTERED'
+               WHERE id = %s""",
+            [
+                clean_str(body["first_name"]),
+                clean_str(body.get("middle_name")),
+                clean_str(body["last_name"]),
+                wl_entry["id"],
+            ],
+        )
+        execute("UPDATE users SET last_login = NOW() WHERE id = %s", [user["id"]])
         log_action(f"{expected_role} registered via whitelist", email, str(user["id"]))
+
+        # Generate tokens so the mobile client can auto-login immediately
+        access_token  = make_access_token(str(user["id"]), expected_role)
+        refresh_token = make_refresh_token(str(user["id"]))
+        perm_row = fetchone("SELECT permissions FROM roles WHERE name = %s", [expected_role])
+        perms = (perm_row.get("permissions") or []) if perm_row else []
+
         return created(
-            {"id": str(user["id"]), "email": user["email"], "status": "ACTIVE"},
-            "Account created successfully. You can now log in.",
+            {
+                "id":            str(user["id"]),
+                "email":         user["email"],
+                "first_name":    user["first_name"],
+                "last_name":     user["last_name"],
+                "cvsu_id":       clean_str(body["cvsu_id"]),
+                "status":        "ACTIVE",
+                "permissions":   perms,
+                "token":         access_token,
+                "refresh_token": refresh_token,
+            },
+            "Account created successfully.",
         )
     else:
         # Not in whitelist → create as PENDING, admin must approve
