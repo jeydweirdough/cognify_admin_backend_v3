@@ -310,13 +310,14 @@ async def faculty_update(request: Request, assess_id: str):
     if questions is not None:
         payload["questions"] = questions
 
+    # Use a more generic selection to handle both PENDING and REVISION_REQUESTED
     existing_req = fetchone(
-        "SELECT id FROM request_changes WHERE target_id = %s AND type = 'ASSESSMENT' AND status = 'PENDING' AND created_by = %s LIMIT 1",
+        "SELECT id FROM request_changes WHERE target_id = %s AND type = 'ASSESSMENT' AND created_by = %s AND status IN ('PENDING', 'REVISION_REQUESTED') LIMIT 1",
         [assess_id, auth.user_id]
     )
     if existing_req:
         execute(
-            "UPDATE request_changes SET content = %s WHERE id = %s",
+            "UPDATE request_changes SET content = %s, status = 'PENDING', updated_at = NOW() WHERE id = %s",
             [PgJson(payload), str(existing_req["id"])]
         )
         change_id = str(existing_req["id"])
@@ -529,10 +530,15 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
     # Stage a request_change when faculty submits
     if new_status == "PENDING" and not can_approve:
         existing_req = fetchone(
-            "SELECT id FROM request_changes WHERE target_id = %s AND type = 'ASSESSMENT' AND status = 'PENDING' LIMIT 1",
-            [assess_id]
+            "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'ASSESSMENT' AND status IN ('PENDING', 'REVISION_REQUESTED')",
+            [assess_id, auth.user_id]
         )
-        if not existing_req:
+        if existing_req:
+            execute(
+                "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s",
+                [PgJson({"action": "UPDATE_ASSESSMENT", "title": a["title"]}), str(existing_req["id"])]
+            )
+        else:
             execute(
                 "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING')",
                 [assess_id, auth.user_id, PgJson({"action": "CREATE_ASSESSMENT", "title": a["title"]})]

@@ -230,10 +230,26 @@ async def faculty_submit_change(request: Request, subject_id: str):
     try: body = await request.json()
     except Exception: body = {}
     
-    change = execute_returning(
-        "INSERT INTO request_changes (target_id, created_by, type, content) VALUES (%s, %s, 'SUBJECT', %s) RETURNING id",
-        [subject_id, auth.user_id, body]
+    # If there is already a REVISION_REQUESTED or PENDING request for this subject/user, update it
+    existing_req = fetchone(
+        "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'SUBJECT' AND status IN ('PENDING', 'REVISION_REQUESTED')",
+        [subject_id, auth.user_id]
     )
+
+    if existing_req:
+        change = execute_returning(
+            "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s RETURNING id",
+            [PgJson(body), str(existing_req["id"])]
+        )
+    else:
+        change = execute_returning(
+            "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'SUBJECT', %s, 'PENDING') RETURNING id",
+            [subject_id, auth.user_id, PgJson(body)]
+        )
+    
+    # Also mark the subject as pending
+    execute("UPDATE subjects SET status = 'PENDING' WHERE id = %s", [subject_id])
+    
     log_action("Submitted subject change for review", None, subject_id, user_id=auth.user_id, ip=auth.ip)
     return created({"change_id": str(change["id"])})
 
@@ -281,10 +297,26 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
             "sort_order": body.get("sort_order", existing["sort_order"])
         }
         
-        execute(
-            "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'MODULE', %s, 'PENDING')",
-            [module_id, auth.user_id, PgJson(payload)]
+        # Check if there's already a REVISION_REQUESTED or PENDING request for this module/user
+        existing_req = fetchone(
+            "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'MODULE' AND status IN ('PENDING', 'REVISION_REQUESTED')",
+            [module_id, auth.user_id]
         )
+        
+        if existing_req:
+            execute(
+                "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s",
+                [PgJson(payload), str(existing_req["id"])]
+            )
+        else:
+            execute(
+                "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'MODULE', %s, 'PENDING')",
+                [module_id, auth.user_id, PgJson(payload)]
+            )
+        
+        # Also update the live module status to PENDING so it reflects in the UI
+        execute("UPDATE modules SET status = 'PENDING' WHERE id = %s", [module_id])
+        
         log_action("Submitted module edit for review", payload["title"], module_id, user_id=auth.user_id, ip=auth.ip)
         
         # Return the existing module so the UI doesn't crash, but flag it as pending review
