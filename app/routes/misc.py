@@ -366,8 +366,17 @@ async def reject_request_change(request: Request, request_id: str):
     # 1. Check modules table first (Direct submission rejection)
     mod = fetchone("SELECT id FROM modules WHERE id = %s AND status = 'PENDING'", [request_id])
     if mod:
-        # For new modules, rejection means back to DRAFT with a Note
-        execute("UPDATE modules SET status = 'REVISION_REQUESTED', description = COALESCE(%s, description) WHERE id = %s", [f"{note}", request_id])
+        # For new modules, rejection means back to REVISION_REQUESTED with a Note
+        execute("UPDATE modules SET status = 'REVISION_REQUESTED' WHERE id = %s", [request_id])
+        
+        # Also create a request_changes entry so it shows up in revisions_list with history
+        execute(
+            """INSERT INTO request_changes (target_id, created_by, type, content, revisions_list, status) 
+               VALUES (%s, %s, 'MODULE', %s, %s, 'REVISION_REQUESTED')""",
+            [request_id, auth.user_id, 
+             PgJson({"action": "CREATE_MODULE", "title": "New Module Submission"}),
+             PgJson([{"notes": note, "status": "REVISION_REQUESTED", "author_id": auth.user_id, "created_at": "now"}])]
+        )
         return ok({"status": "REVISION_REQUESTED"})
 
     # 2. Check request_changes (Edits rejection)
@@ -377,10 +386,10 @@ async def reject_request_change(request: Request, request_id: str):
     rev_list = req.get("revisions_list") or []
     if isinstance(rev_list, str):
         rev_list = json.loads(rev_list)
-    rev_list.append({"notes": note, "status": "REJECTED", "author_id": auth.user_id})
+    rev_list.append({"notes": note, "status": "REVISION_REQUESTED", "author_id": auth.user_id, "created_at": "now"})
 
     execute(
-        "UPDATE request_changes SET status = 'REJECTED', revisions_list = %s WHERE id = %s",
+        "UPDATE request_changes SET status = 'REVISION_REQUESTED', revisions_list = %s WHERE id = %s",
         [PgJson(rev_list), request_id]
     )
 
@@ -389,12 +398,43 @@ async def reject_request_change(request: Request, request_id: str):
     if entity_type == "ASSESSMENT":
         execute("UPDATE assessments SET status = 'REVISION_REQUESTED', updated_at = NOW() WHERE id = %s", [target_id])
     elif entity_type == "MODULE":
-        execute("UPDATE modules SET status = 'REJECTED' WHERE id = %s", [target_id])
+        execute("UPDATE modules SET status = 'REVISION_REQUESTED' WHERE id = %s", [target_id])
     elif entity_type == "SUBJECT":
-        execute("UPDATE subjects SET status = 'REJECTED' WHERE id = %s", [target_id])
+        execute("UPDATE subjects SET status = 'REVISION_REQUESTED' WHERE id = %s", [target_id])
 
-    log_action("Rejected change request", None, request_id, user_id=auth.user_id, ip=auth.ip)
-    return ok({"message": "Request rejected successfully"})
+    log_action("Requested revision for change request", None, request_id, user_id=auth.user_id, ip=auth.ip)
+    return ok({"message": "Revision requested successfully"})
+
+@admin_rev_router.get("")
+async def admin_list_revisions(request: Request):
+    permission_required("view_revisions")(request)
+    page, per_page = get_page_params(request)
+    search = get_search(request)
+    
+    sql = """
+        SELECT r.id, r.target_id, r.type, r.status, r.created_by,
+               r.content, r.revisions_list, r.created_at,
+               u.first_name || ' ' || u.last_name AS author_name
+        FROM request_changes r
+        LEFT JOIN users u ON u.id = r.created_by
+        WHERE r.status = 'REVISION_REQUESTED'
+    """
+    params = []
+    if search:
+        sql += " AND (LOWER(r.type) LIKE LOWER(%s) OR r.content->>'title' LIKE %s)"
+        params.extend([f"%{search}%", f"%{search}%"])
+        
+    sql += " ORDER BY r.created_at DESC"
+    result = paginate(sql, params, page, per_page)
+    
+    for r in result["items"]:
+        r["id"] = str(r["id"])
+        if r.get("target_id"): r["target_id"] = str(r["target_id"])
+        if r.get("created_by"): r["created_by"] = str(r["created_by"])
+        if r.get("created_at"): r["created_at"] = r["created_at"].isoformat()
+        if r.get("revisions_list") is None: r["revisions_list"] = []
+        
+    return ok(result)
 
 @faculty_rev_router.get("")
 async def list_revisions(request: Request):
@@ -406,12 +446,12 @@ async def list_revisions(request: Request):
         SELECT r.id, r.target_id, r.type, r.status, r.created_by,
 		r.type,  r.content, r.revisions_list, r.status, r.created_at
         FROM request_changes r
-        WHERE r.status = 'REJECTED' AND r.created_by = %s
+        WHERE r.status = 'REVISION_REQUESTED' AND r.created_by = %s
     """
     params = [auth.user_id]
     if search:
-        sql += " AND LOWER(r.category) LIKE LOWER(%s)"
-        params.append(f"%{search}%")
+        sql += " AND (LOWER(r.type) LIKE LOWER(%s) OR r.content->>'title' LIKE %s)"
+        params.extend([f"%{search}%", f"%{search}%"])
         
     sql += " ORDER BY r.created_at DESC"
     result = paginate(sql, params, page, per_page)

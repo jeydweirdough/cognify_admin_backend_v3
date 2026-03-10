@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS subjects (
     weight      INT          DEFAULT 0,          -- NEW
     passing_rate INT         DEFAULT 75,         -- NEW
     status      VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
-                CHECK (status IN ('PENDING','APPROVED','REJECTED', 'REMOVED')),
+                CHECK (status IN ('PENDING','APPROVED','REJECTED', 'REMOVED', 'REVISION_REQUESTED')),
     created_by  UUID         REFERENCES users(id) ON DELETE SET NULL,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS modules (
     file_name   VARCHAR(255),
     sort_order  INT          NOT NULL DEFAULT 0,
     status      VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
-                CHECK (status IN ('PENDING','APPROVED','REJECTED', 'REMOVED')),
+                CHECK (status IN ('PENDING','APPROVED','REJECTED', 'REMOVED', 'REVISION_REQUESTED')),
     created_by  UUID         REFERENCES users(id) ON DELETE SET NULL,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
