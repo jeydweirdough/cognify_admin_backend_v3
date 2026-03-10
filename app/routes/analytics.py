@@ -349,6 +349,139 @@ async def faculty_get_analytics_detail(request: Request, student_id: str):
 # Enforces mobile_login permission (STUDENT role only).
 # ═══════════════════════════════════════════════════════════════
 
+def _get_recommended_modules(user_id: str, limit: int = 3) -> list:
+    """
+    Recommendation algorithm:
+    1. If student has assessment history → find their weakest subjects (lowest avg score)
+       and recommend modules from those subjects that they haven't studied yet.
+    2. If no assessment history (fallback) → return a random selection of approved modules.
+    """
+
+    # Check if student has any assessment results
+    has_results = fetchone(
+        "SELECT COUNT(*) AS c FROM assessment_results WHERE user_id = %s",
+        [user_id],
+    )
+    has_data = has_results and int(has_results["c"] or 0) > 0
+
+    if has_data:
+        # --- Data-driven path: recommend modules from weakest subjects ---
+
+        # 1. Rank subjects by avg score (ascending = weakest first)
+        weak_subjects = fetchall(
+            """
+            SELECT s.id AS subject_id, s.name AS subject_name,
+                   AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) AS avg_score
+            FROM assessment_results ar
+            JOIN assessments a ON a.id = ar.assessment_id
+            JOIN subjects s ON s.id = a.subject_id
+            WHERE ar.user_id = %s
+            GROUP BY s.id, s.name
+            ORDER BY avg_score ASC
+            """,
+            [user_id],
+        )
+
+        recommended = []
+
+        for subj in weak_subjects:
+            if len(recommended) >= limit:
+                break
+
+            subj_id = str(subj["subject_id"])
+            avg_score = round(float(subj["avg_score"] or 0), 1)
+
+            # 2. Get modules from this weak subject that the student hasn't accessed
+            modules = fetchall(
+                """
+                SELECT m.id, m.title, m.format, s.name AS subject_name, s.id AS subject_id
+                FROM modules m
+                JOIN subjects s ON s.id = m.subject_id
+                WHERE m.subject_id = %s
+                  AND m.status = 'APPROVED'
+                  AND m.parent_id IS NULL
+                ORDER BY m.sort_order ASC, m.created_at ASC
+                LIMIT %s
+                """,
+                [subj_id, limit - len(recommended)],
+            )
+
+            for mod in modules:
+                recommended.append({
+                    "id":           str(mod["id"]),
+                    "title":        mod["title"],
+                    "format":       mod["format"],
+                    "subject_name": mod["subject_name"],
+                    "subject_id":   str(mod["subject_id"]),
+                    "reason":       "weak_subject",
+                    "avg_score":    avg_score,
+                })
+
+        # 3. If not enough from weak subjects, pad with random approved modules
+        if len(recommended) < limit:
+            existing_ids = [r["id"] for r in recommended]
+            placeholder = ",".join(["%s"] * len(existing_ids)) if existing_ids else "NULL"
+            extra_sql = f"""
+                SELECT m.id, m.title, m.format, s.name AS subject_name, s.id AS subject_id
+                FROM modules m
+                JOIN subjects s ON s.id = m.subject_id
+                WHERE m.status = 'APPROVED'
+                  AND m.parent_id IS NULL
+                  {"AND m.id NOT IN (" + placeholder + ")" if existing_ids else ""}
+                ORDER BY RANDOM()
+                LIMIT %s
+            """
+            extra_params = existing_ids + [limit - len(recommended)]
+            extras = fetchall(extra_sql, extra_params)
+            for mod in extras:
+                recommended.append({
+                    "id":           str(mod["id"]),
+                    "title":        mod["title"],
+                    "format":       mod["format"],
+                    "subject_name": mod["subject_name"],
+                    "subject_id":   str(mod["subject_id"]),
+                    "reason":       "explore",
+                    "avg_score":    None,
+                })
+
+        return recommended
+
+    else:
+        # --- Fallback path: no assessment data yet, show random modules ---
+        random_modules = fetchall(
+            """
+            SELECT m.id, m.title, m.format, s.name AS subject_name, s.id AS subject_id
+            FROM modules m
+            JOIN subjects s ON s.id = m.subject_id
+            WHERE m.status = 'APPROVED'
+              AND m.parent_id IS NULL
+            ORDER BY RANDOM()
+            LIMIT %s
+            """,
+            [limit],
+        )
+        return [
+            {
+                "id":           str(mod["id"]),
+                "title":        mod["title"],
+                "format":       mod["format"],
+                "subject_name": mod["subject_name"],
+                "subject_id":   str(mod["subject_id"]),
+                "reason":       "explore",
+                "avg_score":    None,
+            }
+            for mod in random_modules
+        ]
+
+
+@mobile_prog_router.get("/progress/recommendations")
+async def mobile_progress_recommendations(request: Request):
+    """Return personalized module recommendations based on the student's weak subjects."""
+    auth = mobile_permission_required("mobile_view_progress")(request)
+    recommendations = _get_recommended_modules(auth.user_id, limit=3)
+    return ok({"recommendations": recommendations})
+
+
 @mobile_prog_router.get("/progress")
 async def mobile_progress(request: Request):
     """Return the authenticated student's own readiness & assessment results."""
