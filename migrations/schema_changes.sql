@@ -264,24 +264,61 @@ CREATE TABLE IF NOT EXISTS assessment_results (
 CREATE INDEX idx_results_user ON assessment_results(user_id);
 
 CREATE OR REPLACE VIEW view_student_individual_readiness AS
-SELECT 
-    u.id AS user_id,
+-- Computation mirrors _calc_readiness() in analytics.py exactly:
+--   Step 1 — per student × subject × assessment type: AVG((score/items)*100)
+--             PRE_ASSESSMENT is excluded (it's a baseline, not a board score).
+--   Step 2 — per student × subject: take MAX across all non-pre assessment types.
+--             This means the student's best attempt per subject is used.
+--   Step 3 — zero-fill: approved subjects with no results contribute 0.
+--   Step 4 — overall = SUM(per-subject scores) / total_approved_subjects
+WITH
+approved_subjects AS (
+    SELECT id, name
+    FROM   subjects
+    WHERE  status = 'APPROVED'
+),
+total_approved AS (
+    SELECT COUNT(*) AS cnt
+    FROM   approved_subjects
+),
+-- Step 1: per student, per subject, per assessment type → average score %
+type_avgs AS (
+    SELECT
+        ar.user_id,
+        a.subject_id,
+        AVG((ar.score::NUMERIC / NULLIF(ar.total_items, 0)) * 100) AS type_avg
+    FROM  assessment_results ar
+    JOIN  assessments a ON a.id = ar.assessment_id
+    WHERE a.subject_id IN (SELECT id FROM approved_subjects)
+      AND a.type <> 'PRE_ASSESSMENT'
+    GROUP BY ar.user_id, a.subject_id, a.type
+),
+-- Step 2: per student, per subject → best score across all non-pre types
+subject_best AS (
+    SELECT
+        user_id,
+        subject_id,
+        MAX(type_avg) AS subject_score
+    FROM  type_avgs
+    GROUP BY user_id, subject_id
+)
+SELECT
+    u.id        AS user_id,
     u.first_name,
     u.last_name,
-    -- Calculate percentage: (Sum of all scores / Sum of all items) * 100
+    -- Zero-fill for subjects with no results; divide by total approved (not just attempted).
     ROUND(
-        (SUM(ar.score)::NUMERIC / NULLIF(SUM(ar.total_items), 0)) * 100, 
-    2) AS readiness_percentage
-FROM 
-    users u
-INNER JOIN 
-    roles r ON u.role_id = r.id
-LEFT JOIN 
-    assessment_results ar ON u.id = ar.user_id
-WHERE 
-    r.name ILIKE 'student' AND u.status = 'ACTIVE'
-GROUP BY 
-    u.id, u.first_name, u.last_name;
+        COALESCE(SUM(COALESCE(sb.subject_score, 0)), 0)::NUMERIC
+        / NULLIF((SELECT cnt FROM total_approved), 0),
+    1) AS readiness_percentage
+FROM       users            u
+JOIN       roles            r   ON r.id  = u.role_id
+CROSS JOIN approved_subjects ap
+LEFT  JOIN subject_best     sb  ON sb.user_id    = u.id
+                                AND sb.subject_id = ap.id
+WHERE  r.name ILIKE 'student'
+  AND  u.status = 'ACTIVE'
+GROUP BY u.id, u.first_name, u.last_name;
 
 CREATE OR REPLACE VIEW view_general_readiness AS
 SELECT 

@@ -97,38 +97,103 @@ async def faculty_dashboard(request: Request):
 # ANALYTICS HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_pass_probability(avg_score: float) -> dict:
+    """Compute pass probability key and label from average score.
+    Thresholds: >=75 HIGH_CHANCE, >=60 LIKELY, >=25 NEEDS_IMPROVEMENT, >=1 AT_RISK, 0 NO_PROGRESS."""
+    if avg_score >= 75:
+        return {"key": "HIGH_CHANCE", "label": "High Chance"}
+    if avg_score >= 60:
+        return {"key": "LIKELY", "label": "Likely to Pass"}
+    if avg_score >= 25:
+        return {"key": "NEEDS_IMPROVEMENT", "label": "Needs Improvement"}
+    if avg_score >= 1:
+        return {"key": "AT_RISK", "label": "At Risk"}
+    return {"key": "NO_PROGRESS", "label": "Not Started"}
+
+def _get_board_readiness(avg_score: float) -> str:
+    """Compute board readiness level from average score.
+    Thresholds: >=75 READY, >=60 MID, else LOW."""
+    if avg_score >= 75:
+        return "READY"
+    if avg_score >= 60:
+        return "MID"
+    return "LOW"
+
 def _cohort_analytics_data() -> dict:
     """Helper to fetch and calculate system-wide cohort analytics."""
     subj_data = fetchall("""
         SELECT s.name AS subject, AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) as cohort_score
-        FROM assessment_results ar
-        JOIN assessments a ON a.id = ar.assessment_id
-        JOIN subjects s ON s.id = a.subject_id
+        FROM subjects s
+        LEFT JOIN assessments a ON a.subject_id = s.id
+        LEFT JOIN assessment_results ar ON ar.assessment_id = a.id
+        WHERE s.status = 'APPROVED'
         GROUP BY s.name
+        ORDER BY s.name
     """)
-    competency = [{"subject": r["subject"].split()[-1], "fullSubject": r["subject"], "cohortScore": round(float(r["cohort_score"] or 0)), "passingStandard": 75} for r in subj_data]
+    competency = [{"subject": r["subject"], "fullSubject": r["subject"], "cohortScore": round(float(r["cohort_score"] or 0)), "passingStandard": 75} for r in subj_data]
 
     students = fetchall("SELECT readiness_percentage FROM view_student_individual_readiness")
     total = len(students)
-    high = sum(1 for s in students if float(s["readiness_percentage"] or 0) >= 80)
-    mod = sum(1 for s in students if 65 <= float(s["readiness_percentage"] or 0) < 80)
-    low = sum(1 for s in students if float(s["readiness_percentage"] or 0) < 65)
+
+    buckets = {"HIGH_CHANCE": 0, "LIKELY": 0, "NEEDS_IMPROVEMENT": 0, "AT_RISK": 0, "NO_PROGRESS": 0}
+    for s in students:
+        key = _get_pass_probability(float(s["readiness_percentage"] or 0))["key"]
+        buckets[key] += 1
 
     dist = [
-        {"name": "High Probability (>80%)", "value": round((high/max(1,total))*100) if total else 0, "color": "#10b981", "count": high},
-        {"name": "Moderate Probability (65–79%)", "value": round((mod/max(1,total))*100) if total else 0, "color": "#f59e0b", "count": mod},
-        {"name": "Low Probability (<65%)", "value": round((low/max(1,total))*100) if total else 0, "color": "#ef4444", "count": low}
+        {"name": "High Chance (≥75%)",         "value": round((buckets["HIGH_CHANCE"]      / max(1, total)) * 100), "color": "#10b981", "count": buckets["HIGH_CHANCE"]},
+        {"name": "Likely to Pass (60–74%)",     "value": round((buckets["LIKELY"]           / max(1, total)) * 100), "color": "#3b82f6", "count": buckets["LIKELY"]},
+        {"name": "Needs Improvement (25–59%)",  "value": round((buckets["NEEDS_IMPROVEMENT"]/ max(1, total)) * 100), "color": "#f59e0b", "count": buckets["NEEDS_IMPROVEMENT"]},
+        {"name": "At Risk (1–24%)",             "value": round((buckets["AT_RISK"]          / max(1, total)) * 100), "color": "#ef4444", "count": buckets["AT_RISK"]},
+        {"name": "Not Started (0%)",            "value": round((buckets["NO_PROGRESS"]      / max(1, total)) * 100), "color": "#94a3b8", "count": buckets["NO_PROGRESS"]},
     ]
+
+    sorted_competency = sorted(competency, key=lambda x: x["cohortScore"], reverse=True)
+    avg_score = round(sum(c["cohortScore"] for c in competency) / max(1, len(competency))) if competency else 0
+    passing_rate = round(((buckets["HIGH_CHANCE"] + buckets["LIKELY"]) / max(1, total)) * 100) if total else 0
+
+    # Handling multiple strongest/weakest subjects
+    strongest_score = sorted_competency[0]["cohortScore"] if sorted_competency else 0
+    weakest_score = sorted_competency[-1]["cohortScore"] if sorted_competency else 0
+    
+    strongest_subjects = [c for c in competency if c["cohortScore"] == strongest_score] if competency else []
+    weakest_subjects = [c for c in competency if c["cohortScore"] == weakest_score] if competency else []
 
     return {
         "subjectCompetency": competency,
         "probabilityDistribution": dist,
-        "totalStudents": total
+        "totalStudents": total,
+        "stats": {
+            "total": total,
+            "avgScore": avg_score,
+            "passingRate": passing_rate,
+            "strongestSubject": strongest_subjects[0] if strongest_subjects else None,
+            "weakestSubject": weakest_subjects[0] if weakest_subjects else None,
+            "strongestSubjects": strongest_subjects,
+            "weakestSubjects": weakest_subjects,
+        }
     }
 
 def _calc_readiness(user_id: str) -> dict:
+    # ── Overall percentage: single source of truth from the SQL view ──
+    # The view and this function previously diverged because the view included
+    # PRE_ASSESSMENT scores, while this function used MAX of non-pre types.
+    # Now the view matches this logic exactly, so we read from it directly
+    # to guarantee /analytics list, /analytics/{id}, mobile, and dashboard
+    # all return the same number.
+    view_row = fetchone(
+        "SELECT readiness_percentage FROM view_student_individual_readiness WHERE user_id = %s",
+        [user_id],
+    )
+    pct = float(view_row["readiness_percentage"] or 0) if view_row else 0.0
+
+    # ── Subject-level breakdown for chart display ──
+    # Mirrors the view logic: per-type AVG → MAX per subject → zero-fill.
+    all_subjects = fetchall("SELECT name FROM subjects WHERE status = 'APPROVED' ORDER BY name")
+    total_subjects = len(all_subjects)
+
     rows = fetchall(
-        """SELECT a.type, s.name AS subject, 
+        """SELECT a.type, s.name AS subject,
                   AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) AS avg_score
            FROM assessment_results ar
            JOIN assessments a ON a.id = ar.assessment_id
@@ -142,29 +207,26 @@ def _calc_readiness(user_id: str) -> dict:
     for r in rows:
         subj = r["subject"]
         if subj not in subject_map:
-            subject_map[subj] = {"subject": subj, "scores": [], "pre_score": 0, "current_score": 0}
+            subject_map[subj] = {"current_score": 0, "pre_score": 0}
         score = float(r["avg_score"] or 0)
-        subject_map[subj]["scores"].append(score)
         if r["type"] == "PRE_ASSESSMENT":
             subject_map[subj]["pre_score"] = score
         else:
             subject_map[subj]["current_score"] = max(subject_map[subj]["current_score"], score)
 
     subject_scores = []
-    all_scores = []
-    for subj_data in subject_map.values():
-        avg = sum(subj_data["scores"]) / len(subj_data["scores"]) if subj_data["scores"] else 0
-        all_scores.append(avg)
+    for s in all_subjects:
+        name = s["name"]
+        data = subject_map.get(name, {"current_score": 0, "pre_score": 0})
         subject_scores.append({
-            "subject":      subj_data["subject"],
-            "preScore":     round(subj_data["pre_score"], 1),
-            "currentScore": round(subj_data["current_score"], 1),
+            "subject":      name,
+            "preScore":     round(data["pre_score"], 1),
+            "currentScore": round(data["current_score"], 1),
             "fullMark":     100,
         })
 
-    pct   = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
     level = "HIGH" if pct >= 80 else "MODERATE" if pct >= 65 else "LOW"
-    return {"percentage": pct, "level": level, "subject_scores": subject_scores}
+    return {"percentage": pct, "level": level, "subject_scores": subject_scores, "total_subjects": total_subjects}
 
 def _calc_streak(user_id: str) -> int:
     rows = fetchall(
@@ -234,6 +296,22 @@ def _student_full_record(identifier: str) -> dict | None:
     student["assessmentsTaken"]  = int(stats["total_taken"] or 0)
     student["assessmentsPassed"] = int(stats["total_passed"] or 0)
 
+    # ── Derived analytics computed server-side ──
+    # Only sort subjects that actually have results for strength/weakness display
+    scored_subjects = [s for s in readiness["subject_scores"] if s["currentScore"] > 0]
+    no_data = {"subject": "No Data", "preScore": 0, "currentScore": 0, "fullMark": 0}
+    sorted_scores = sorted(scored_subjects, key=lambda x: x["currentScore"], reverse=True)
+    student["strength"] = sorted_scores[0] if sorted_scores else no_data
+    student["weakness"] = sorted_scores[-1] if sorted_scores else no_data
+    student["computedAverage"] = readiness["percentage"]
+    student["totalSubjects"] = readiness["total_subjects"]
+    student["percentile"] = min(99, int(readiness["percentage"] + 8))
+    student["passRate"] = round((student["assessmentsPassed"] / max(1, student["assessmentsTaken"])) * 100)
+    student["boardReadiness"] = _get_board_readiness(readiness["percentage"])
+    _prob = _get_pass_probability(readiness["percentage"])
+    student["passProbabilityKey"] = _prob["key"]
+    student["passProbabilityLabel"] = _prob["label"]
+
     mock_history = fetchall(
         """SELECT ar.date_taken AS date, ((ar.score::numeric/NULLIF(ar.total_items,0))*100) AS pct_score, a.title AS label
            FROM assessment_results ar JOIN assessments a ON a.id = ar.assessment_id
@@ -289,13 +367,19 @@ def _analytics_list(request: Request):
         
     sql.append("ORDER BY v.first_name")
     result = paginate(" ".join(sql), params, page, per_page)
-    
+
+    # Fetch total approved subjects once — same denominator used in _calc_readiness()
+    total_subjects_row = fetchone("SELECT COUNT(*) AS c FROM subjects WHERE status = 'APPROVED'")
+    total_subjects = int(total_subjects_row["c"] or 0) if total_subjects_row else 0
+
     for r in result["items"]:
         r["id"] = str(r["id"])
         avg = float(r["average"] or 0)
-        r["average"] = avg
-        r["probability"] = "HIGH" if avg >= 80 else "MODERATE" if avg >= 65 else "LOW"
-        r["weakSubject"] = "N/A" 
+        r["average"] = round(avg, 1)
+        r["totalSubjects"] = total_subjects
+        _prob = _get_pass_probability(avg)
+        r["passProbabilityKey"] = _prob["key"]
+        r["passProbabilityLabel"] = _prob["label"]
         
     return result
 
