@@ -19,13 +19,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Cognify Admin API")
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    # Origins are read from CORS_ORIGINS (comma-separated).
-    # Strip whitespace from each entry so values like
-    # "https://foo.vercel.app, https://bar.vercel.app" parse correctly.
     raw_origins = os.getenv(
         "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
     )
-
     origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -87,16 +83,17 @@ def create_app() -> FastAPI:
 
 
 def _register_routers(app: FastAPI):
-    from app.routes.auth              import web_auth_router, mobile_auth_router
-    from app.routes.whitelist         import admin_whitelist_router, faculty_whitelist_router
-    from app.routes.users      import admin_users_router, faculty_users_router
-    from app.routes.profile    import mobile_profile_router
-    from app.routes.subjects   import admin_subjects_router, faculty_subjects_router, mobile_subjects_router
-    from app.routes.content    import admin_content_router, faculty_content_router, mobile_content_router
+    from app.routes.auth        import web_auth_router, mobile_auth_router
+    from app.routes.whitelist   import admin_whitelist_router, faculty_whitelist_router
+    from app.routes.users       import admin_users_router, faculty_users_router
+    from app.routes.profile     import mobile_profile_router
+    from app.routes.subjects    import admin_subjects_router, faculty_subjects_router, mobile_subjects_router
+    from app.routes.content     import admin_content_router, faculty_content_router, mobile_content_router
     from app.routes.assessments import admin_assess_router, faculty_assess_router, mobile_assess_router
-    from app.routes.analytics  import admin_dash_router, faculty_dash_router, mobile_prog_router
-    from app.routes.moods      import mobile_moods_router, admin_moods_router, faculty_moods_router
-    from app.routes.misc       import (
+    from app.routes.analytics   import admin_dash_router, faculty_dash_router, mobile_prog_router
+    from app.routes.moods       import mobile_moods_router, admin_moods_router, faculty_moods_router
+    from app.routes.tos         import admin_tos_router, mobile_tos_router
+    from app.routes.misc        import (
         settings_router, admin_logs_router,
         admin_rev_router, faculty_rev_router,
         admin_verify_router, faculty_verify_router,
@@ -113,6 +110,7 @@ def _register_routers(app: FastAPI):
         admin_assess_router, faculty_assess_router, mobile_assess_router,
         admin_dash_router, faculty_dash_router, mobile_prog_router,
         mobile_moods_router, admin_moods_router, faculty_moods_router,
+        admin_tos_router, mobile_tos_router,
         settings_router, admin_logs_router,
         admin_rev_router, faculty_rev_router,
         admin_verify_router, faculty_verify_router,
