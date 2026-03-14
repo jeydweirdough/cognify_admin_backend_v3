@@ -171,7 +171,7 @@ async def admin_delete(request: Request, subject_id: str):
     if not s: return not_found()
     execute("DELETE FROM subjects WHERE id = %s", [subject_id])
     log_action("Deleted subject", s["name"], subject_id, user_id=auth.user_id, ip=auth.ip)
-    return no_content()
+    return ok()
 
 @admin_subjects_router.post("/{subject_id}/modules")
 async def admin_add_module(request: Request, subject_id: str):
