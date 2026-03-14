@@ -66,64 +66,51 @@ def _clean_desc(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _TOS_PROMPT = """
-You are processing a Philippine PRC (Professional Regulatory Commission)
-Table of Specifications (TOS) PDF for Psychology board examinations.
+You are a deterministic data extraction engine for Philippine PRC Table of Specifications (TOS) PDFs.
 
-DOCUMENT STRUCTURE
-==================
-The PDF has MULTIPLE pages and contains EXACTLY 4 subject blocks total:
-  - 2 subjects under ANNEX A  (Psychologist board examinees)
-  - 2 subjects under ANNEX B  (Psychometrician board examinees)
+Your ONLY purpose is to extract ALL subjects, sections, and competencies from the uploaded PDF exactly as written and reproduce them in a strictly structured Markdown format. 
 
-Each subject block follows this pattern:
+Never summarize, paraphrase, or add conversational text. Do not output anything outside of the requested format.
 
-  ANNEX A          ← plain text header, outside any table
-  Subject: <name>  ← plain text, outside any table
-  Weight: <N>%     ← plain text, outside any table
+═══════════════════════════════════════════════════════
+REQUIRED OUTPUT FORMAT (STRICT)
+═══════════════════════════════════════════════════════
 
-  Then a table with these columns (left to right):
-  Col 0 : Topics/Competencies  — section header OR competency code + description
-  Col 1 : Weight               — percentage (e.g. "5%") or blank
-  Col 2 : No. of Items         — integer
-  Col 3 : Remembering          — Bloom's level 1 integer
-  Col 4 : Understanding        — Bloom's level 2 integer
-  Col 5 : Applying             — Bloom's level 3 integer
-  Col 6 : Analyzing            — Bloom's level 4 integer
-  Col 7 : Evaluating           — Bloom's level 5 integer
-  Col 8 : Creating             — Bloom's level 6 integer
+For EACH subject block in the document, you MUST output the following exact structure. Do not wrap the output in ```markdown code blocks.
 
-TABLE ROW TYPES
-===============
-HEADER ROW     — Col 0 contains "Topics/Competencies", "No. of Items",
-                 "Remembering", etc.  Must be reproduced exactly.
-SECTION ROW    — Col 0 starts with "A." / "B." / "1." / "2." followed by a
-                 capital letter and a title.  Numeric cols are blank.
-COMPETENCY ROW — Col 0 starts with a decimal code like "1.1", "2.3", "1.1.1".
-                 All numeric cols contain integers (0 if not applicable).
-TOTAL ROW      — Col 0 is exactly "TOTAL" or "TOTALS".
-GRAND TOTAL    — Col 0 is "100%" or "Total (for N items, ...)" — this row
-                 marks the END of the subject block.
+ANNEX "<letter>"
+Subject: <exact subject name from the PDF>
+Weight: <N>%
 
-OUTPUT RULES
-============
-1. Output Subject/Weight/Annex metadata as PLAIN TEXT outside any table:
-       ANNEX A
-       Subject: General Psychology
-       Weight: 30%
+| Topics/Competencies | Weight | No. of Items | Remembering | Understanding | Applying | Analyzing | Evaluating | Creating |
+|---|---|---|---|---|---|---|---|---|
+| A. <Section Title> | "" | "" | "" | "" | "" | "" | "" | "" |
+| 1.1 <Competency text> | 2% | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
+| TOTAL | 100% | 100 | 15 | 15 | 40 | 20 | 10 | 0 |
 
-2. Reproduce every table row verbatim as a pipe-delimited markdown table.
-   Do NOT omit any row.  Do NOT merge rows.  Do NOT summarise.
+═══════════════════════════════════════════════════════
+RULES FOR EXTRACTION
+═══════════════════════════════════════════════════════
 
-3. Preserve multi-line cell text within a single table cell — do not split
-   a wrapped description onto two separate rows.
+1. SUBJECT BOUNDARIES:
+   - Metadata lines (Board for..., as of..., PQF Level, Difficulty Level) must be IGNORED.
+   - Only extract `ANNEX`, `Subject:`, and `Weight:` and place them strictly ABOVE the markdown table as plain text.
+   - A new subject begins with a "Subject:" header.
 
-4. If a table continues across a page break, output it as ONE unbroken table.
+2. COLUMN NORMALIZATION (CRITICAL):
+   - Every table must have EXACTLY 9 columns.
+   - You MUST normalize Bloom's Taxonomy columns into the exact order shown above, regardless of their visual order in the PDF.
+   - Each number from the PDF belongs to exactly ONE Bloom column. Never duplicate.
 
-5. Use ---PAGE--- to separate pages.
+3. ROW HANDLING:
+   - SECTION HEADER ROWS (e.g., "A. Foundations"): Put the title in Column 1. Fill Columns 2-9 with empty strings `""`.
+   - COMPETENCY ROWS (e.g., "1.1 Explain...", "2. Apply..."): Put text in Column 1. Fill missing numeric cells with `0`.
+   - MERGED/WRAPPED TEXT: If a competency spans multiple lines in the PDF, merge it into a single line. Never split one competency into multiple rows.
 
-6. Numeric cells must contain integers.  Use 0 for blank numeric cells.
+4. TOTALS:
+   - The final row of a subject is usually the GRAND TOTAL (e.g., "100%", "TOTAL 100%"). Extract it into the 9 columns accordingly.
 
-7. Do NOT add any commentary, notes, or analysis.
+DO NOT add explanations, commentary, or markdown formatting blocks. Output raw text and tables only. Extract ALL subjects present in the document.
 """.strip()
 
 
@@ -241,8 +228,14 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
     """
     Parse LlamaParse markdown into structured TOS data.
 
-    Critical: every subject is flushed when its 100% grand-total row is seen,
-    NOT at end-of-file.  This ensures all 4 subjects are captured.
+    Fixes vs previous version:
+    - annex/board now preserved across subject flushes correctly
+    - grand_total Bloom values read from correct named columns (not positional)
+    - garbled numbers from Psych Assessment section-level rows handled
+    - TOTALS row without col_ni match now sums Bloom values
+    - section header regex extended to handle lowercase starts and multi-word
+    - Bloom column index guard prevents out-of-bounds crash
+    - `ni == 0 → sum(bv)` only applied when ALL bloom vals also suggest items
     """
     subjects    = []
     annex       = board = subj_name = subj_weight = None
@@ -254,8 +247,6 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
     col_weight   = 1
     col_ni       = 2
     col_bloom: dict = {}
-    # header_found only gates *initial* discovery — once columns are known
-    # they persist across page separators within the same subject
     header_found = False
 
     # ── state helpers ──────────────────────────────────────────────────────────
@@ -274,7 +265,7 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
             cur_sec = None
 
     def _flush_subject():
-        """Commit the current subject to the list and reset all subject state."""
+        """Commit the current subject and reset all state."""
         nonlocal annex, board, subj_name, subj_weight
         nonlocal sections, cur_sec, grand_total
         nonlocal col_weight, col_ni, col_bloom, header_found
@@ -289,8 +280,12 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
                 'grand_total': grand_total or {**_zero_bloom(), 'total_items': 0, 'weight': '100%'},
             })
             logger.info(f"Saved subject '{subj_name}' ({len(sections)} sections)")
-        # Reset everything for the next subject
-        annex = board = subj_name = subj_weight = grand_total = None
+        # Save annex/board across flush — they persist to the next subject
+        # (all 4 subjects in this PDF are under the same board)
+        saved_annex, saved_board = annex, board
+        annex = saved_annex
+        board = saved_board
+        subj_name = subj_weight = grand_total = None
         sections     = []
         cur_sec      = None
         col_weight   = 1
@@ -298,43 +293,64 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         col_bloom    = {}
         header_found = False
 
+    def _safe_bloom_val(cells, key):
+        """Get a bloom value safely from the named column, 0 if out of bounds."""
+        idx = col_bloom.get(key, -1)
+        if idx < 0 or idx >= len(cells):
+            return 0
+        return _int(cells[idx])
+
     def _bloom_vals(cells: list) -> list:
         if col_bloom:
-            return [
-                _int(cells[col_bloom[k]]) if col_bloom.get(k, -1) < len(cells) else 0
-                for k in BLOOM_KEYS
-            ]
+            return [_safe_bloom_val(cells, k) for k in BLOOM_KEYS]
+        # Fallback: positional cols 3-8
         return [_int(cells[i]) if i < len(cells) else 0 for i in range(3, 9)]
+
+    def _bloom_sanity(bv: list, ni: int) -> list:
+        """
+        Sanity-check bloom values. If any single value exceeds ni significantly
+        it means column boundaries were mis-read (e.g. Psych Assessment garbling).
+        In that case, zero out all bloom values — better than storing garbage.
+        """
+        if ni <= 0:
+            return bv
+        if any(v > ni * 20 for v in bv):  # 20x item count = clearly garbled
+            logger.warning(f"Bloom values look garbled (ni={ni}, bv={bv}), zeroing out")
+            return [0] * len(bv)
+        return bv
 
     # ── line loop ──────────────────────────────────────────────────────────────
 
     for line in full_md.splitlines():
         stripped = line.strip()
 
-        # ── page separator: only reset in_table flag, keep column knowledge ───
+        # page separator — keep column knowledge across pages in same subject
         if '---PAGE---' in stripped or stripped == '---':
-            # Do NOT reset header_found or col_bloom here —
-            # columns persist across pages in the same subject
             continue
 
-        # ── non-table text: look for Annex / Subject / Weight metadata ─────────
+        # ── non-table text: Annex / Subject / Weight metadata ─────────────────
         if not stripped.startswith('|'):
-            # ANNEX marker
-            m = re.search(r'ANNEX\s*[""«\u201c\u2018\u2019\u201d\'\(]*([AB])', stripped, re.I)
+            # ANNEX marker — match ANNEX A, ANNEX "B", ANNEX(B), etc.
+            # NOTE: Do NOT flush subject here. In this PDF all 4 subjects share
+            # the same ANNEX B, so ANNEX lines are not subject boundaries.
+            # Subject boundaries are detected by the Subject: line below.
+            m = re.search(r'ANNEX\s*[""«\u201c\u2018\u2019\u201d\'"\(]*([AB])', stripped, re.I)
             if m:
                 a = m.group(1).upper()
-                if a != annex:
-                    _save_comp()
-                    _flush_subject()
-                    annex = a
-                    board = 'Psychologist' if a == 'A' else 'Psychometrician'
+                annex = a
+                board = 'Psychologist' if a == 'A' else 'Psychometrician'
 
-            # Subject:
+            # Subject: — this is the PRIMARY subject boundary signal.
+            # Flush the current subject and start fresh whenever a new Subject:
+            # line appears, even if same ANNEX. Use normalised comparison to
+            # handle minor whitespace/casing variations from LlamaParse.
             m = (re.match(r'\*{0,2}Subject:\*{0,2}\s*\*{0,2}(.+?)\*{0,2}$', stripped, re.I)
                  or re.match(r'Subject:\s*(.+)', stripped, re.I))
             if m:
                 new_name = re.sub(r'\*+', '', m.group(1)).strip()
-                if new_name != subj_name:
+                new_name_norm = re.sub(r'\s+', ' ', new_name).lower()
+                cur_name_norm = re.sub(r'\s+', ' ', subj_name or '').lower()
+                if new_name_norm != cur_name_norm:
                     saved_annex, saved_board = annex, board
                     _save_comp()
                     _flush_subject()
@@ -361,7 +377,9 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         m_subj = re.match(r'Subject:\s*(.+)', c0_clean, re.I)
         if m_subj and not any(cells[i].strip() for i in range(1, min(4, len(cells)))):
             new_name = m_subj.group(1).strip()
-            if new_name != subj_name:
+            new_name_norm = re.sub(r'\s+', ' ', new_name).lower()
+            cur_name_norm  = re.sub(r'\s+', ' ', subj_name or '').lower()
+            if new_name_norm != cur_name_norm:
                 saved_annex, saved_board = annex, board
                 _save_comp(); _flush_subject()
                 annex, board = saved_annex, saved_board
@@ -371,6 +389,14 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         m_wt = re.match(r'Weight:\s*(\d+%)', c0_clean, re.I)
         if m_wt and not any(cells[i].strip() for i in range(1, min(4, len(cells)))):
             subj_weight = m_wt.group(1)
+            continue
+
+        # Also detect inline ANNEX inside table cell (rare but happens)
+        # Only update annex/board — do NOT flush. Subject: line handles boundaries.
+        m_annex = re.search(r'ANNEX\s*[""«\u201c\u2018\u2019\u201d\'"\(]*([AB])', c0_clean, re.I)
+        if m_annex and not any(cells[i].strip() for i in range(1, min(4, len(cells)))):
+            annex = m_annex.group(1).upper()
+            board = 'Psychologist' if annex == 'A' else 'Psychometrician'
             continue
 
         # ── table header row ───────────────────────────────────────────────────
@@ -390,25 +416,26 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         SKIP = [
             r'^PQF Level', r'^Difficulty', r"^Bloom'?s", r'^Topics',
             r'^The Examinees?', r'^Easy', r'^Moderate', r'^Difficult',
-            r'^No\.?\s+of', r'^Weight$', r'^Board',
+            r'^No\.?\s+of', r'^Weight$', r'^Board', r'^Examinees',
         ]
         if any(re.match(p, c0_clean, re.I) for p in SKIP):
             continue
 
         # ── GRAND TOTAL — end of subject block ────────────────────────────────
-        # BUG FIX: was calling save_sec() only; must call _flush_subject() so
-        # the subject is actually appended and state is reset for the next one.
         is_grand = (
             re.match(r'^100%$', c0_clean)
+            or re.match(r'^TOTAL\s*100%', c0_clean, re.I)
             or re.match(r'^Total\s*\(for\s*\d+', c0_clean, re.I)
             or re.match(r'^Grand\s*Total', c0_clean, re.I)
+            or re.match(r'^TOTALS?\s*100%', c0_clean, re.I)
         )
         if is_grand:
             _save_comp()
             ni = _int(cells[col_ni]) if col_ni < len(cells) else 0
             bv = _bloom_vals(cells)
+            bv = _bloom_sanity(bv, ni)
             grand_total = {'weight': '100%', 'total_items': ni, **_bloom_dict(bv)}
-            _flush_subject()   # ← THE KEY FIX
+            _flush_subject()
             continue
 
         # ── section TOTAL row ──────────────────────────────────────────────────
@@ -416,6 +443,7 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
             _save_comp()
             ni = _int(cells[col_ni]) if col_ni < len(cells) else 0
             bv = _bloom_vals(cells)
+            bv = _bloom_sanity(bv, ni if ni > 0 else sum(bv))
             if ni == 0:
                 ni = sum(bv)
             if cur_sec:
@@ -427,16 +455,52 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
             continue
 
         # ── section header ─────────────────────────────────────────────────────
+        # Matches: "A. Title", "B. Title", "1. Title", "2. Title" etc.
+        # Does NOT match competency codes like "1.1", "2.3"
         is_sec = (
             bool(re.match(r'^[A-F]\.\s+\S', c0_clean))
-            or bool(re.match(r'^\d{1,2}\.\s+[A-Z\u201c]', c0_clean))
+            or bool(re.match(r'^\d{1,2}\.\s+[A-Za-z\u201c]', c0_clean))
         ) and not bool(re.match(r'^\d{1,2}[.,]\d', c0_clean))
 
+        # CRITICAL: Psych Assessment uses numbered competencies ("1. Ascertain...",
+        # "2. Describe...") that carry Bloom data directly on the same row.
+        # Only reclassify as competency when:
+        #   - prefix is a NUMBER (not A./B./C. which are always section headers)
+        #   - AND the row has Bloom data in cols 3-8 (not just a subtotal in col 2)
         if is_sec:
-            _save_comp()
-            _save_sec()
-            cur_sec = {'title': c0_clean, 'competencies': [], 'total': None}
-            continue
+            is_numbered = bool(re.match(r'^\d{1,2}\.\s+', c0_clean))
+            bloom_data = any(_int(cells[i]) > 0 for i in range(3, min(9, len(cells))))
+            if is_numbered and bloom_data:
+                # Reclassify: numbered competency without a decimal code
+                _save_comp()
+                m_num = re.match(r'^(\d{1,2})\.\s+(.*)', c0_clean, re.S)
+                if m_num:
+                    code = m_num.group(1)
+                    desc = _clean_desc(m_num.group(2).strip())
+                else:
+                    code, desc = '', _clean_desc(c0_clean)
+
+                wt  = cells[col_weight] if col_weight < len(cells) else ''
+                ni  = _int(cells[col_ni]) if col_ni < len(cells) else 0
+                bv  = _bloom_vals(cells)
+                bv  = _bloom_sanity(bv, ni if ni > 0 else sum(bv))
+                if ni == 0 and 0 < sum(bv) <= 50:
+                    ni = sum(bv)
+
+                if cur_sec is None:
+                    cur_sec = {'title': '', 'competencies': [], 'total': None}
+
+                cur_comp = {
+                    'code': code, 'description': desc,
+                    'weight': wt, 'no_of_items': ni,
+                    **_bloom_dict(bv),
+                }
+                continue
+            else:
+                _save_comp()
+                _save_sec()
+                cur_sec = {'title': c0_clean, 'competencies': [], 'total': None}
+                continue
 
         # ── competency row ─────────────────────────────────────────────────────
         if re.match(r'^\d{1,2}[.,]\d{1,2}', c0_clean):
@@ -451,7 +515,9 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
             wt = cells[col_weight] if col_weight < len(cells) else ''
             ni = _int(cells[col_ni]) if col_ni < len(cells) else 0
             bv = _bloom_vals(cells)
-            if ni == 0:
+            bv = _bloom_sanity(bv, ni if ni > 0 else sum(bv))
+            # Only infer ni from bloom when ni truly 0 AND sum(bv) is plausible
+            if ni == 0 and 0 < sum(bv) <= 50:
                 ni = sum(bv)
 
             if cur_sec is None:
@@ -479,6 +545,7 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
 
     logger.info(f"parse_llamaparse_markdown: {len(subjects)} subjects extracted")
     return {'subjects': subjects}
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -619,6 +686,14 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
             sections.append(cur_sec)
             cur_sec = None
 
+    def _bloom_sanity_geo(bv, ni):
+        if ni <= 0:
+            return bv
+        if any(v > ni * 20 for v in bv):
+            logger.warning(f"Geometry: bloom values garbled (ni={ni}, bv={bv}), zeroing")
+            return [0] * len(bv)
+        return bv
+
     def _flush():
         nonlocal annex, board, subj_name, subj_weight, sections, cur_sec, grand_total
         _ss()
@@ -632,7 +707,11 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
                 'grand_total': grand_total or {**_zero_bloom(), 'total_items': 0, 'weight': '100%'},
             })
             logger.info(f"Geometry saved subject '{subj_name}'")
-        annex = board = subj_name = subj_weight = grand_total = None
+        # Preserve annex/board — they carry forward to next subject
+        saved_annex, saved_board = annex, board
+        annex = saved_annex
+        board = saved_board
+        subj_name = subj_weight = grand_total = None
         sections = []
         cur_sec  = None
 
@@ -675,20 +754,24 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
             if any(re.match(p, c0, re.I) for p in SKIP):
                 return
 
-            # Grand total — flush subject (BUG FIX same as markdown parser)
+            # Grand total — flush subject
             if (re.match(r'^100%$', c0)
+                    or re.match(r'^TOTAL\s*100%', c0, re.I)
+                    or re.match(r'^TOTALS?\s*100%', c0, re.I)
                     or re.match(r'^Total\s*\(for\s*\d+', c0, re.I)
                     or re.match(r'^Grand\s*Total', c0, re.I)):
                 _sc()
                 ni = _int(cells[2])
                 bv = [_int(cells[j]) for j in range(3, 9)]
+                bv = _bloom_sanity_geo(bv, ni)
                 grand_total = {'weight': '100%', 'total_items': ni, **_bloom_dict(bv)}
-                _flush()   # ← THE KEY FIX
+                _flush()
                 return
 
             if re.match(r'^TOTALS?$', c0, re.I):
                 _sc()
                 ni = _int(cells[2]); bv = [_int(cells[j]) for j in range(3, 9)]
+                bv = _bloom_sanity_geo(bv, ni if ni > 0 else sum(bv))
                 if ni == 0: ni = sum(bv)
                 if cur_sec:
                     cur_sec['total'] = {'weight': cells[1], 'total_items': ni, **_bloom_dict(bv)}
@@ -696,11 +779,36 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
 
             is_sec = (
                 bool(re.match(r'^[A-F]\.\s+\S', c0))
-                or bool(re.match(r'^\d{1,2}\.\s+[A-Z\u201c]', c0))
+                or bool(re.match(r'^\d{1,2}\.\s+[A-Za-z\u201c]', c0))
             ) and not bool(re.match(r'^\d{1,2}[.,]\d', c0))
             if is_sec:
-                _sc(); _ss()
-                cur_sec = {'title': c0, 'competencies': [], 'total': None}
+                # If the row is number-prefixed AND has Bloom data (cols 3-8),
+                # it is a numbered competency (Psych Assessment style).
+                # Lettered headers (A., B.) with only a subtotal in col 2 remain sections.
+                is_numbered = bool(re.match(r'^\d{1,2}\.\s+', c0))
+                bloom_data  = any(_int(cells[i]) > 0 for i in range(3, 9))
+                has_numeric_data = is_numbered and bloom_data
+                if has_numeric_data:
+                    _sc()
+                    m_num = re.match(r'^(\d{1,2})\.\s+(.*)', c0, re.S)
+                    if m_num:
+                        code = m_num.group(1)
+                        desc = _clean_desc(m_num.group(2).strip())
+                    else:
+                        code, desc = '', _clean_desc(c0)
+                    ni = _int(cells[2]); bv = [_int(cells[j]) for j in range(3, 9)]
+                    bv = _bloom_sanity_geo(bv, ni if ni > 0 else sum(bv))
+                    if ni == 0 and 0 < sum(bv) <= 50: ni = sum(bv)
+                    if cur_sec is None:
+                        cur_sec = {'title': '', 'competencies': [], 'total': None}
+                    cur_comp = {
+                        'code': code, 'description': desc,
+                        'weight': cells[1], 'no_of_items': ni,
+                        **_bloom_dict(bv),
+                    }
+                else:
+                    _sc(); _ss()
+                    cur_sec = {'title': c0, 'competencies': [], 'total': None}
                 return
 
             if re.match(r'^\d{1,2}[.,]\d{1,2}', c0):
@@ -711,7 +819,8 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
                     if m else ('', _clean_desc(c0))
                 )
                 ni = _int(cells[2]); bv = [_int(cells[j]) for j in range(3, 9)]
-                if ni == 0: ni = sum(bv)
+                bv = _bloom_sanity_geo(bv, ni if ni > 0 else sum(bv))
+                if ni == 0 and 0 < sum(bv) <= 50: ni = sum(bv)
                 if cur_sec is None:
                     cur_sec = {'title': '', 'competencies': [], 'total': None}
                 cur_comp = {
