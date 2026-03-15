@@ -86,8 +86,9 @@ async def list_logs(request: Request):
     """
     params = []
     if search:
-        sql += " AND (LOWER(al.action) LIKE LOWER(%s) OR LOWER(u.email) LIKE LOWER(%s))"
-        params.extend([search, search])
+        like = f"%{search}%"
+        sql += " AND (LOWER(al.action) LIKE LOWER(%s) OR LOWER(u.email) LIKE LOWER(%s) OR LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(%s))"
+        params.extend([like, like, like])
         
     sql += " ORDER BY al.created_at DESC"
     result = paginate(sql, params, page, per_page)
