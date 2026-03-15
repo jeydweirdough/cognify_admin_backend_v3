@@ -44,7 +44,8 @@ _SELECT_WITH_Q = """
                        'text', q.text,
                        'options', q.options,
                        'correct_answer', q.correct_answer,
-                       'author_id', q.author_id
+                       'author_id', q.author_id,
+                       'competency_codes', COALESCE(q.competency_codes, '[]'::jsonb)
                    ) ORDER BY q.date_created
                ) FILTER (WHERE q.id IS NOT NULL),
                '[]'::jsonb
@@ -68,13 +69,19 @@ def _fmt(a: dict, include_questions=False) -> dict:
             raw_qs = json.loads(raw_qs)
         normalized = []
         for q in raw_qs:
+            raw_codes = q.get("competency_codes", [])
+            if isinstance(raw_codes, str):
+                import json as _json
+                try: raw_codes = _json.loads(raw_codes)
+                except Exception: raw_codes = []
             normalized.append({
-                "id":            str(q.get("question_id") or q.get("id", "")),
-                "text":          q.get("text", ""),
-                "options":       q.get("options", []),
-                "correctAnswer": q.get("correct_answer", q.get("correctAnswer", 0)),
-                "mode":          q.get("mode", "MCQ"),
-                "points":        q.get("points", 1),
+                "id":               str(q.get("question_id") or q.get("id", "")),
+                "text":             q.get("text", ""),
+                "options":          q.get("options", []),
+                "correctAnswer":    q.get("correct_answer", q.get("correctAnswer", 0)),
+                "mode":             q.get("mode", "MCQ"),
+                "points":           q.get("points", 1),
+                "competency_codes": raw_codes if isinstance(raw_codes, list) else [],
             })
         a["questions"] = normalized
     else:
@@ -128,10 +135,13 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
         execute("DELETE FROM questions WHERE id = %s", [qid])
 
     for q in questions:
-        qid     = str(q.get("id", ""))
-        text    = (q.get("text") or "").strip()
-        options = q.get("options", [])
-        correct = q.get("correctAnswer", q.get("correct_answer", 0))
+        qid              = str(q.get("id", ""))
+        text             = (q.get("text") or "").strip()
+        options          = q.get("options", [])
+        correct          = q.get("correctAnswer", q.get("correct_answer", 0))
+        competency_codes = q.get("competency_codes", [])
+        if not isinstance(competency_codes, list):
+            competency_codes = []
         try:
             correct = int(correct)
         except (TypeError, ValueError):
@@ -139,13 +149,18 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
 
         if qid and not qid.startswith("q-") and qid in existing_ids:
             execute(
-                "UPDATE questions SET text = %s, options = %s, correct_answer = %s, last_updated = NOW() WHERE id = %s",
-                [text, PgJson(options), correct, qid],
+                """UPDATE questions
+                      SET text = %s, options = %s, correct_answer = %s,
+                          competency_codes = %s, last_updated = NOW()
+                    WHERE id = %s""",
+                [text, PgJson(options), correct, PgJson(competency_codes), qid],
             )
         else:
             execute_returning(
-                "INSERT INTO questions (assessment_id, author_id, text, options, correct_answer) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                [assess_id, author_id, text, PgJson(options), correct],
+                """INSERT INTO questions
+                       (assessment_id, author_id, text, options, correct_answer, competency_codes)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                [assess_id, author_id, text, PgJson(options), correct, PgJson(competency_codes)],
             )
 
 

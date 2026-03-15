@@ -172,6 +172,7 @@ CREATE TABLE questions (
     author_id      UUID        REFERENCES users(id) ON DELETE SET NULL,
     text           TEXT        NOT NULL,
     assessment_id  UUID        REFERENCES assessments(id) ON DELETE CASCADE,
+    competency_codes JSONB NOT NULL DEFAULT '[]',
     options        JSONB       NOT NULL DEFAULT '[]',
     correct_answer INT         NOT NULL DEFAULT 0,
     date_created   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -330,6 +331,8 @@ CREATE INDEX idx_activity_logs_date ON activity_logs(created_at);
 CREATE INDEX idx_student_moods_user ON student_moods(user_id);
 CREATE INDEX idx_student_moods_date ON student_moods(mood_date);
 CREATE INDEX idx_student_moods_key  ON student_moods(mood_key);
+
+CREATE INDEX idx_questions_competency_codes ON questions USING gin(competency_codes);
 
 
 -- ============================================================
