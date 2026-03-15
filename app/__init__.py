@@ -99,6 +99,10 @@ def _register_routers(app: FastAPI):
         admin_verify_router, faculty_verify_router,
         roles_router,
     )
+    from app.routes.announcements import (
+        admin_announcements_router,
+        public_announcements_router,
+    )
 
     for router in [
         web_auth_router, mobile_auth_router,
@@ -115,5 +119,7 @@ def _register_routers(app: FastAPI):
         admin_rev_router, faculty_rev_router,
         admin_verify_router, faculty_verify_router,
         roles_router,
+        admin_announcements_router,
+        public_announcements_router,
     ]:
         app.include_router(router)

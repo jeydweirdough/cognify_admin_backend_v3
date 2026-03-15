@@ -24,6 +24,7 @@
 
 DROP TABLE IF EXISTS student_moods        CASCADE;
 DROP TABLE IF EXISTS activity_logs        CASCADE;
+DROP TABLE IF EXISTS announcements        CASCADE;
 DROP TABLE IF EXISTS tos_versions         CASCADE;
 DROP TABLE IF EXISTS assessment_results   CASCADE;
 DROP TABLE IF EXISTS questions            CASCADE;
@@ -266,6 +267,21 @@ CREATE TABLE activity_logs (
     created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- ── ANNOUNCEMENTS ─────────────────────────────────────────────
+CREATE TABLE announcements (
+    id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    title         VARCHAR(200) NOT NULL,
+    body          TEXT         NOT NULL,
+    type          VARCHAR(30)  NOT NULL DEFAULT 'INFO',
+    audience      VARCHAR(20)  NOT NULL DEFAULT 'ALL',
+    is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
+    tos_progress  INT          CHECK (tos_progress IS NULL OR (tos_progress >= 0 AND tos_progress <= 100)),
+    expires_at    TIMESTAMPTZ,
+    created_by    UUID         REFERENCES users(id) ON DELETE SET NULL,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 -- ── STUDENT MOODS ─────────────────────────────────────────────
 -- One mood entry per student per date; upsert on conflict.
 CREATE TABLE student_moods (
@@ -327,6 +343,10 @@ CREATE INDEX idx_tos_versions_created_by    ON tos_versions(created_by);
 
 CREATE INDEX idx_activity_logs_user ON activity_logs(user_id);
 CREATE INDEX idx_activity_logs_date ON activity_logs(created_at);
+
+CREATE INDEX idx_announcements_active     ON announcements(is_active);
+CREATE INDEX idx_announcements_created_at ON announcements(created_at DESC);
+CREATE INDEX idx_announcements_audience   ON announcements(audience);
 
 CREATE INDEX idx_student_moods_user ON student_moods(user_id);
 CREATE INDEX idx_student_moods_date ON student_moods(mood_date);
@@ -536,3 +556,15 @@ SET permissions = permissions
     || '["view_tos","create_tos","edit_tos","delete_tos"]'::jsonb
 WHERE name = 'ADMIN'
   AND NOT (permissions @> '"view_tos"'::jsonb);
+-- Ensure FACULTY has view_student_analytics (pairs with view_analytics)
+UPDATE roles
+SET permissions = permissions || '["view_student_analytics"]'::jsonb
+WHERE name = 'FACULTY'
+  AND (permissions @> '"view_analytics"'::jsonb)
+  AND NOT (permissions @> '"view_student_analytics"'::jsonb);
+
+-- Ensure FACULTY and ADMIN have view_announcements
+UPDATE roles
+SET permissions = permissions || '["view_announcements"]'::jsonb
+WHERE name IN ('FACULTY', 'ADMIN')
+  AND NOT (permissions @> '"view_announcements"'::jsonb);
