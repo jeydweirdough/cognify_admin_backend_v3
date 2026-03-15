@@ -251,7 +251,6 @@ def permission_required(permission_id: str):
 
     Usage:
         auth = permission_required("edit_subjects")(request)
-        auth = permission_required("approve_verification")(request)
     """
     def check(request: Request) -> AuthState:
         from app.db import fetchone as _fetchone

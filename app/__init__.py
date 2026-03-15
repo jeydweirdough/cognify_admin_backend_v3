@@ -95,8 +95,6 @@ def _register_routers(app: FastAPI):
     from app.routes.tos         import admin_tos_router, mobile_tos_router
     from app.routes.misc        import (
         settings_router, admin_logs_router,
-        admin_rev_router, faculty_rev_router,
-        admin_verify_router, faculty_verify_router,
         roles_router,
     )
     from app.routes.announcements import (
@@ -116,8 +114,6 @@ def _register_routers(app: FastAPI):
         mobile_moods_router, admin_moods_router, faculty_moods_router,
         admin_tos_router, mobile_tos_router,
         settings_router, admin_logs_router,
-        admin_rev_router, faculty_rev_router,
-        admin_verify_router, faculty_verify_router,
         roles_router,
         admin_announcements_router,
         public_announcements_router,

@@ -213,45 +213,14 @@ async def faculty_add_module(request: Request, subject_id: str):
     auth = permission_required("create_content")(request)
     try: body = await request.json()
     except Exception: body = {}
-    return _add_module(subject_id, body, auth, auto_approve=False)
+    return _add_module(subject_id, body, auth, auto_approve=True)
 
 @faculty_subjects_router.put("/{subject_id}/modules/{module_id}")
 async def faculty_update_module(request: Request, subject_id: str, module_id: str):
     auth = permission_required("edit_content")(request)
     try: body = await request.json()
     except Exception: body = {}
-    return _update_module(module_id, body, auth, auto_approve=False)
-
-@faculty_subjects_router.post("/{subject_id}/submit-change")
-async def faculty_submit_change(request: Request, subject_id: str):
-    auth = permission_required("edit_subjects")(request)
-    if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
-        return not_found()
-    try: body = await request.json()
-    except Exception: body = {}
-    
-    # If there is already a REVISION_REQUESTED or PENDING request for this subject/user, update it
-    existing_req = fetchone(
-        "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'SUBJECT' AND status IN ('PENDING', 'REVISION_REQUESTED')",
-        [subject_id, auth.user_id]
-    )
-
-    if existing_req:
-        change = execute_returning(
-            "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s RETURNING id",
-            [PgJson(body), str(existing_req["id"])]
-        )
-    else:
-        change = execute_returning(
-            "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'SUBJECT', %s, 'PENDING') RETURNING id",
-            [subject_id, auth.user_id, PgJson(body)]
-        )
-    
-    # Also mark the subject as pending
-    execute("UPDATE subjects SET status = 'PENDING' WHERE id = %s", [subject_id])
-    
-    log_action("Submitted subject change for review", None, subject_id, user_id=auth.user_id, ip=auth.ip)
-    return created({"change_id": str(change["id"])})
+    return _update_module(module_id, body, auth, auto_approve=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SHARED TOPIC WRITE HELPERS
@@ -284,47 +253,7 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     
     content_payload = body.get("fileData") if body.get("format") == "PDF" else body.get("content", existing.get("content"))
 
-    if not auto_approve:
-        # FACULTY MODE: Intercept the update and push to staging table (request_changes)
-        payload = {
-            "action": "UPDATE_MODULE",
-            "title": clean_str(body.get("title", existing["title"])),
-            "description": clean_str(body.get("description", existing.get("description"))),
-            "content": content_payload,
-            "format": body.get("format", existing.get("format", "TEXT")),
-            "file_url": body.get("fileUrl", existing.get("file_url")),
-            "file_name": body.get("fileName", existing.get("file_name")),
-            "sort_order": body.get("sort_order", existing["sort_order"])
-        }
-        
-        # Check if there's already a REVISION_REQUESTED or PENDING request for this module/user
-        existing_req = fetchone(
-            "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'MODULE' AND status IN ('PENDING', 'REVISION_REQUESTED')",
-            [module_id, auth.user_id]
-        )
-        
-        if existing_req:
-            execute(
-                "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s",
-                [PgJson(payload), str(existing_req["id"])]
-            )
-        else:
-            execute(
-                "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'MODULE', %s, 'PENDING')",
-                [module_id, auth.user_id, PgJson(payload)]
-            )
-        
-        # Also update the live module status to PENDING so it reflects in the UI
-        execute("UPDATE modules SET status = 'PENDING' WHERE id = %s", [module_id])
-        
-        log_action("Submitted module edit for review", payload["title"], module_id, user_id=auth.user_id, ip=auth.ip)
-        
-        # Return the existing module so the UI doesn't crash, but flag it as pending review
-        formatted = _format_module(existing)
-        formatted["status"] = "PENDING_UPDATE"
-        return ok(formatted)
-
-    # ADMIN MODE: Auto-approve and write directly to live modules table
+    # Always write directly to the live modules table (no staging)
     updated = execute_returning(
         """UPDATE modules SET title = %s, description = %s, content = %s,
                               type = %s, format = %s, file_url = %s, file_name = %s,
