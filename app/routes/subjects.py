@@ -320,45 +320,14 @@ async def faculty_add_module(request: Request, subject_id: str):
     auth = permission_required("create_content")(request)
     try: body = await request.json()
     except Exception: body = {}
-    return _add_module(subject_id, body, auth, auto_approve=False)
+    return _add_module(subject_id, body, auth, auto_approve=True)
 
 @faculty_subjects_router.put("/{subject_id}/modules/{module_id}")
 async def faculty_update_module(request: Request, subject_id: str, module_id: str):
     auth = permission_required("edit_content")(request)
     try: body = await request.json()
     except Exception: body = {}
-    return _update_module(module_id, body, auth, auto_approve=False)
-
-@faculty_subjects_router.post("/{subject_id}/submit-change")
-async def faculty_submit_change(request: Request, subject_id: str):
-    auth = permission_required("edit_subjects")(request)
-    if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
-        return not_found()
-    try: body = await request.json()
-    except Exception: body = {}
-    
-    # If there is already a REVISION_REQUESTED or PENDING request for this subject/user, update it
-    existing_req = fetchone(
-        "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'SUBJECT' AND status IN ('PENDING', 'REVISION_REQUESTED')",
-        [subject_id, auth.user_id]
-    )
-
-    if existing_req:
-        change = execute_returning(
-            "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s RETURNING id",
-            [PgJson(body), str(existing_req["id"])]
-        )
-    else:
-        change = execute_returning(
-            "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'SUBJECT', %s, 'PENDING') RETURNING id",
-            [subject_id, auth.user_id, PgJson(body)]
-        )
-    
-    # Also mark the subject as pending
-    execute("UPDATE subjects SET status = 'PENDING' WHERE id = %s", [subject_id])
-    
-    log_action("Submitted subject change for review", None, subject_id, user_id=auth.user_id, ip=auth.ip)
-    return created({"change_id": str(change["id"])})
+    return _update_module(module_id, body, auth, auto_approve=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SHARED TOPIC WRITE HELPERS

@@ -1,7 +1,7 @@
 """
 Assessment routes
-  Admin:   /api/web/admin/assessments  — CRUD + approve/reject
-  Faculty: /api/web/faculty/assessments — CRUD via request_changes staging
+  Admin:   /api/web/admin/assessments  — full CRUD
+  Faculty: /api/web/faculty/assessments — direct CRUD (no staging)
   Mobile:  /api/mobile/student/assessments — list, fetch, submit
 """
 import json
@@ -48,7 +48,8 @@ _SELECT_WITH_Q = """
                        'text', q.text,
                        'options', q.options,
                        'correct_answer', q.correct_answer,
-                       'author_id', q.author_id
+                       'author_id', q.author_id,
+                       'competency_codes', COALESCE(q.competency_codes, '[]'::jsonb)
                    ) ORDER BY q.date_created
                ) FILTER (WHERE q.id IS NOT NULL),
                '[]'::jsonb
@@ -72,13 +73,19 @@ def _fmt(a: dict, include_questions=False) -> dict:
             raw_qs = json.loads(raw_qs)
         normalized = []
         for q in raw_qs:
+            raw_codes = q.get("competency_codes", [])
+            if isinstance(raw_codes, str):
+                import json as _json
+                try: raw_codes = _json.loads(raw_codes)
+                except Exception: raw_codes = []
             normalized.append({
-                "id":            str(q.get("question_id") or q.get("id", "")),
-                "text":          q.get("text", ""),
-                "options":       q.get("options", []),
-                "correctAnswer": q.get("correct_answer", q.get("correctAnswer", 0)),
-                "mode":          q.get("mode", "MCQ"),
-                "points":        q.get("points", 1),
+                "id":               str(q.get("question_id") or q.get("id", "")),
+                "text":             q.get("text", ""),
+                "options":          q.get("options", []),
+                "correctAnswer":    q.get("correct_answer", q.get("correctAnswer", 0)),
+                "mode":             q.get("mode", "MCQ"),
+                "points":           q.get("points", 1),
+                "competency_codes": raw_codes if isinstance(raw_codes, list) else [],
             })
         a["questions"] = normalized
     else:
@@ -91,7 +98,6 @@ def _list(request: Request, extra_where="", extra_params=None):
     page, per_page = get_page_params(request)
     search = get_search(request)
     atype  = get_filter(request, "type", VALID_TYPES)
-    status = get_filter(request, "status", VALID_STATUSES)
     subject_id = (request.query_params.get("subject_id") or "").strip() or None
 
     sql    = [_SELECT, "WHERE 1=1"]
@@ -107,9 +113,6 @@ def _list(request: Request, extra_where="", extra_params=None):
     if atype:
         sql.append("AND a.type = %s")
         params.append(atype)
-    if status:
-        sql.append("AND a.status = %s")
-        params.append(status)
     if subject_id:
         sql.append("AND a.subject_id = %s")
         params.append(subject_id)
@@ -132,10 +135,13 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
         execute("DELETE FROM questions WHERE id = %s", [qid])
 
     for q in questions:
-        qid     = str(q.get("id", ""))
-        text    = (q.get("text") or "").strip()
-        options = q.get("options", [])
-        correct = q.get("correctAnswer", q.get("correct_answer", 0))
+        qid              = str(q.get("id", ""))
+        text             = (q.get("text") or "").strip()
+        options          = q.get("options", [])
+        correct          = q.get("correctAnswer", q.get("correct_answer", 0))
+        competency_codes = q.get("competency_codes", [])
+        if not isinstance(competency_codes, list):
+            competency_codes = []
         try:
             correct = int(correct)
         except (TypeError, ValueError):
@@ -143,13 +149,18 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
 
         if qid and not qid.startswith("q-") and qid in existing_ids:
             execute(
-                "UPDATE questions SET text = %s, options = %s, correct_answer = %s, last_updated = NOW() WHERE id = %s",
-                [text, PgJson(options), correct, qid],
+                """UPDATE questions
+                      SET text = %s, options = %s, correct_answer = %s,
+                          competency_codes = %s, last_updated = NOW()
+                    WHERE id = %s""",
+                [text, PgJson(options), correct, PgJson(competency_codes), qid],
             )
         else:
             execute_returning(
-                "INSERT INTO questions (assessment_id, author_id, text, options, correct_answer) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                [assess_id, author_id, text, PgJson(options), correct],
+                """INSERT INTO questions
+                       (assessment_id, author_id, text, options, correct_answer, competency_codes)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                [assess_id, author_id, text, PgJson(options), correct, PgJson(competency_codes)],
             )
 
 
@@ -182,7 +193,7 @@ async def admin_create(request: Request):
     auth = permission_required("create_assessments")(request)
     try: body = await request.json()
     except Exception: body = {}
-    return _create(body, auth, auto_approve=True)
+    return _create(body, auth)
 
 
 @admin_assess_router.put("/{assess_id}")
@@ -190,61 +201,7 @@ async def admin_update(request: Request, assess_id: str):
     auth = permission_required("edit_assessments")(request)
     try: body = await request.json()
     except Exception: body = {}
-    # When admin approves a request_change, mark it approved in the table
-    requested_status = (body.get("status") or "").upper()
-    if requested_status == "APPROVED":
-        existing_req = fetchone(
-            "SELECT id FROM request_changes WHERE target_id = %s AND type = 'ASSESSMENT' AND status = 'PENDING' LIMIT 1",
-            [assess_id]
-        )
-        if existing_req:
-            execute("UPDATE request_changes SET status = 'APPROVED' WHERE id = %s", [str(existing_req["id"])])
-    return _update(assess_id, body, auth, can_approve=True)
-
-
-@admin_assess_router.patch("/{assess_id}/status")
-async def admin_update_status(request: Request, assess_id: str):
-    auth = permission_required("approve_verification")(request)
-    try: body = await request.json()
-    except Exception: body = {}
-    action = (body.get("status") or "").upper()
-    if action not in {"APPROVED", "REJECTED", "REVISION_REQUESTED"}:
-        return error("status must be APPROVED, REJECTED, or REVISION_REQUESTED")
-    a = fetchone("SELECT id, title FROM assessments WHERE id = %s", [assess_id])
-    if not a: return not_found()
-
-    if action == "REVISION_REQUESTED":
-        note = (body.get("note") or body.get("notes") or "").strip()
-        revision_entry = {"notes": note, "status": "REVISION_REQUESTED", "author_id": auth.user_id}
-        existing_req = fetchone(
-            "SELECT id, revisions_list FROM request_changes WHERE target_id = %s AND type = 'ASSESSMENT' AND status = 'PENDING' LIMIT 1",
-            [assess_id]
-        )
-        if existing_req:
-            rev_list = existing_req.get("revisions_list") or []
-            if isinstance(rev_list, str):
-                rev_list = json.loads(rev_list)
-            rev_list.append(revision_entry)
-            execute(
-                "UPDATE request_changes SET revisions_list = %s WHERE id = %s",
-                [PgJson(rev_list), str(existing_req["id"])]
-            )
-        else:
-            execute(
-                "INSERT INTO request_changes (target_id, created_by, type, content, revisions_list, status) VALUES (%s, %s, 'ASSESSMENT', %s, %s, 'PENDING')",
-                [assess_id, auth.user_id,
-                 PgJson({"action": "REVISION_REQUESTED", "title": a["title"]}),
-                 PgJson([revision_entry])]
-            )
-    elif action in {"APPROVED", "REJECTED"}:
-        execute(
-            "UPDATE request_changes SET status = %s WHERE target_id = %s AND type = 'ASSESSMENT' AND status = 'PENDING'",
-            [action, assess_id]
-        )
-
-    execute("UPDATE assessments SET status = %s, updated_at = NOW() WHERE id = %s", [action, assess_id])
-    log_action(f"Assessment {action.lower()}", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
-    return ok({"id": assess_id, "status": action})
+    return _update(assess_id, body, auth)
 
 
 @admin_assess_router.delete("/{assess_id}")
@@ -254,22 +211,19 @@ async def admin_delete(request: Request, assess_id: str):
 
 
 # ═══════════════════════════════════════════════════════════════
-# FACULTY — uses request_changes staging (mirrors subjects/modules pattern)
+# FACULTY — direct CRUD, same as admin
 # ═══════════════════════════════════════════════════════════════
 
 @faculty_assess_router.get("")
 async def faculty_list(request: Request):
     auth = permission_required("view_assessments")(request)
-    return ok(_list(request, "AND (a.author_id = %s OR a.status = 'APPROVED')", [auth.user_id]))
+    return ok(_list(request))
 
 
 @faculty_assess_router.get("/{assess_id}")
 async def faculty_get(request: Request, assess_id: str):
     auth = permission_required("view_assessments")(request)
-    a = fetchone(
-        _SELECT_WITH_Q + "WHERE a.id = %s AND (a.author_id = %s OR a.status = 'APPROVED') GROUP BY a.id, s.name, m.title, u.first_name, u.last_name",
-        [assess_id, auth.user_id]
-    )
+    a = _fetch_with_questions(assess_id)
     return ok(_fmt(a, include_questions=True)) if a else not_found()
 
 
@@ -278,15 +232,11 @@ async def faculty_create(request: Request):
     auth = permission_required("create_assessments")(request)
     try: body = await request.json()
     except Exception: body = {}
-    return _create(body, auth, auto_approve=False)
+    return _create(body, auth)
 
 
 @faculty_assess_router.put("/{assess_id}")
 async def faculty_update(request: Request, assess_id: str):
-    """
-    DRAFT -> write directly.
-    APPROVED / REVISION_REQUESTED -> stage into request_changes for admin review.
-    """
     auth = permission_required("edit_assessments")(request)
     existing = fetchone("SELECT * FROM assessments WHERE id = %s", [assess_id])
     if not existing: return not_found()
@@ -461,7 +411,7 @@ async def mobile_result(request: Request, assess_id: str):
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def _create(body: dict, auth, auto_approve: bool):
+def _create(body: dict, auth):
     missing = require_fields(body, ["title", "type"])
     if missing:
         return error(f"Missing: {', '.join(missing)}")
@@ -470,7 +420,6 @@ def _create(body: dict, auth, auto_approve: bool):
     if atype not in VALID_TYPES:
         return error(f"type must be one of: {', '.join(VALID_TYPES)}")
 
-    status    = "APPROVED" if auto_approve else (body.get("status") or "DRAFT").upper()
     questions = body.get("questions", [])
 
     a = execute_returning(
@@ -481,7 +430,6 @@ def _create(body: dict, auth, auto_approve: bool):
             body.get("subject_id") or None,
             body.get("module_id")  or None,
             len(questions),
-            status,
             auth.user_id,
             body.get("is_global", False),
         ],
@@ -491,25 +439,14 @@ def _create(body: dict, auth, auto_approve: bool):
     if questions:
         _upsert_questions(assess_id, questions, auth.user_id)
 
-    # Stage in request_changes when faculty submits (not draft)
-    if not auto_approve and status == "PENDING":
-        execute(
-            "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING')",
-            [assess_id, auth.user_id, PgJson({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
-        )
-
     log_action("Created assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     full = _fetch_with_questions(assess_id)
     return created(_fmt(full or a, include_questions=True))
 
 
-def _update(assess_id: str, body: dict, auth, can_approve: bool):
+def _update(assess_id: str, body: dict, auth):
     existing = fetchone("SELECT * FROM assessments WHERE id = %s", [assess_id])
     if not existing: return not_found()
-
-    new_status = (body.get("status") or existing["status"]).upper()
-    if not can_approve and new_status == "APPROVED":
-        new_status = "PENDING"
 
     questions  = body.get("questions", None)
     item_count = len(questions) if questions is not None else existing.get("items", 0)
@@ -534,23 +471,6 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
     if questions is not None:
         _upsert_questions(assess_id, questions, auth.user_id)
 
-    # Stage a request_change when faculty submits
-    if new_status == "PENDING" and not can_approve:
-        existing_req = fetchone(
-            "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'ASSESSMENT' AND status IN ('PENDING', 'REVISION_REQUESTED')",
-            [assess_id, auth.user_id]
-        )
-        if existing_req:
-            execute(
-                "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s",
-                [PgJson({"action": "UPDATE_ASSESSMENT", "title": a["title"]}), str(existing_req["id"])]
-            )
-        else:
-            execute(
-                "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'ASSESSMENT', %s, 'PENDING')",
-                [assess_id, auth.user_id, PgJson({"action": "CREATE_ASSESSMENT", "title": a["title"]})]
-            )
-
     log_action("Updated assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     full = _fetch_with_questions(assess_id)
     return ok(_fmt(full or a, include_questions=True))
@@ -561,8 +481,6 @@ def _delete(assess_id: str, auth, only_own: bool):
     if not a: return not_found()
     if only_own and str(a["author_id"]) != auth.user_id:
         return forbidden("You can only delete your own assessments")
-    if a["status"] == "APPROVED":
-        return error("Cannot delete an approved assessment", 409)
     execute("DELETE FROM assessments WHERE id = %s", [assess_id])
     log_action("Deleted assessment", a["title"], assess_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()
