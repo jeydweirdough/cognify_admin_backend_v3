@@ -497,6 +497,40 @@ async def mobile_get_module(request: Request, subject_id: str, module_id: str):
     formatted["subTopics"] = _build_module_tree(subject_id, module_id, "STUDENT")
     return ok(formatted)
 
+
+@mobile_subjects_router.post("/{subject_id}/modules/{module_id}/read")
+async def mobile_mark_module_read(request: Request, subject_id: str, module_id: str):
+    """Mark a module as read-to-completion by the authenticated student.
+    Idempotent — calling it multiple times is safe (upsert via ON CONFLICT DO NOTHING).
+    """
+    auth = mobile_permission_required("mobile_view_modules")(request)
+    # Verify module belongs to this subject and is approved
+    m = fetchone(
+        "SELECT id FROM modules WHERE id = %s AND subject_id = %s AND status = 'APPROVED'",
+        [module_id, subject_id]
+    )
+    if not m: return not_found("Module not found")
+
+    execute(
+        """INSERT INTO module_reads (user_id, module_id, subject_id)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (user_id, module_id) DO NOTHING""",
+        [auth.user_id, module_id, subject_id]
+    )
+    return ok({"module_id": module_id, "read": True})
+
+
+@mobile_subjects_router.get("/{subject_id}/modules/{module_id}/read")
+async def mobile_get_module_read_status(request: Request, subject_id: str, module_id: str):
+    """Return whether the student has read this module to completion."""
+    auth = mobile_permission_required("mobile_view_modules")(request)
+    row = fetchone(
+        "SELECT id, read_at FROM module_reads WHERE user_id = %s AND module_id = %s",
+        [auth.user_id, module_id]
+    )
+    return ok({"module_id": module_id, "read": row is not None,
+               "read_at": row["read_at"].isoformat() if row else None})
+
 # ═══════════════════════════════════════════════════════════════
 # MOBILE — AI Summarize endpoint
 # Proxies to Anthropic server-side so the API key stays secret.

@@ -167,7 +167,7 @@ def hash_pw(plain):
 
 def apply_pw(hashed):
     run_sql(conn["base"] + ["-c",
-        f"UPDATE users SET password='{hashed}' WHERE password IS NOT NULL;"],
+        f"UPDATE users SET password='{hashed}';"],
         "Update passwords")
 
 

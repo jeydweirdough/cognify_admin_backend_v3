@@ -383,10 +383,14 @@ async def faculty_delete(request: Request, assess_id: str):
 @mobile_assess_router.get("")
 async def mobile_list(request: Request):
     auth = mobile_permission_required("mobile_view_assessments")(request)
-    # Exclude PRE_ASSESSMENT and DIAGNOSTIC from regular mobile list
-    # unless specifically requested via ?type=
-    atype = request.query_params.get("type")
-    if atype:
+    atype      = request.query_params.get("type")
+    subject_id = (request.query_params.get("subject_id") or "").strip() or None
+
+    # When filtering by subject, return ALL approved types (including PRE_ASSESSMENT
+    # and DIAGNOSTIC) so the student can see the full assessment set for that subject.
+    # When browsing the global list with no subject filter, exclude PRE/DIAGNOSTIC
+    # unless a specific type is requested.
+    if subject_id or atype:
         return ok(_list(request, "AND a.status = 'APPROVED'", include_questions=True))
 
     return ok(_list(request, "AND a.status = 'APPROVED' AND a.type NOT IN ('PRE_ASSESSMENT', 'DIAGNOSTIC')", include_questions=True))

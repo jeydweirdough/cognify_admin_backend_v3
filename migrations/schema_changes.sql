@@ -22,6 +22,7 @@
 -- §0  DROP ALL TABLES  (reverse FK order, CASCADE for safety)
 -- ============================================================
 
+DROP TABLE IF EXISTS module_reads         CASCADE;
 DROP TABLE IF EXISTS student_moods        CASCADE;
 DROP TABLE IF EXISTS activity_logs        CASCADE;
 DROP TABLE IF EXISTS announcements        CASCADE;
@@ -172,15 +173,15 @@ CREATE TABLE assessments (
 
 -- ── QUESTIONS ─────────────────────────────────────────────────
 CREATE TABLE questions (
-    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    author_id      UUID        REFERENCES users(id) ON DELETE SET NULL,
-    text           TEXT        NOT NULL,
-    assessment_id  UUID        REFERENCES assessments(id) ON DELETE CASCADE,
-    competency_codes JSONB NOT NULL DEFAULT '[]',
-    options        JSONB       NOT NULL DEFAULT '[]',
-    correct_answer INT         NOT NULL DEFAULT 0,
-    date_created   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_updated   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_id        UUID        REFERENCES users(id) ON DELETE SET NULL,
+    text             TEXT        NOT NULL,
+    assessment_id    UUID        REFERENCES assessments(id) ON DELETE CASCADE,
+    competency_codes JSONB       NOT NULL DEFAULT '[]',
+    options          JSONB       NOT NULL DEFAULT '[]',
+    correct_answer   INT         NOT NULL DEFAULT 0,
+    date_created     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_updated     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ── ASSESSMENT RESULTS ────────────────────────────────────────
@@ -234,14 +235,6 @@ CREATE TABLE system_settings (
 -- ── TOS VERSIONS ──────────────────────────────────────────────
 -- Persists structured TOS data extracted from the board-exam PDF.
 -- One ACTIVE version at a time; others are DRAFT or ARCHIVED.
---
--- `data` JSONB shape (matches extractor.py output envelope):
---   { "subjects": [ { "annex", "board", "subject", "weight",
---                     "sections": [...], "grand_total": {...} } ] }
---
--- status lifecycle:  DRAFT → ACTIVE → ARCHIVED
---   Only one row may be ACTIVE; activating a new one auto-archives
---   the previous one (enforced in app/routes/tos.py).
 CREATE TABLE tos_versions (
     id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     label             VARCHAR(200) NOT NULL,
@@ -272,17 +265,17 @@ CREATE TABLE activity_logs (
 
 -- ── ANNOUNCEMENTS ─────────────────────────────────────────────
 CREATE TABLE announcements (
-    id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    title         VARCHAR(200) NOT NULL,
-    body          TEXT         NOT NULL,
-    type          VARCHAR(30)  NOT NULL DEFAULT 'INFO',
-    audience      VARCHAR(20)  NOT NULL DEFAULT 'ALL',
-    is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
-    tos_progress  INT          CHECK (tos_progress IS NULL OR (tos_progress >= 0 AND tos_progress <= 100)),
-    expires_at    TIMESTAMPTZ,
-    created_by    UUID         REFERENCES users(id) ON DELETE SET NULL,
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    title        VARCHAR(200) NOT NULL,
+    body         TEXT         NOT NULL,
+    type         VARCHAR(30)  NOT NULL DEFAULT 'INFO', -- INFO | WARNING | SUCCESS | TOS_PROGRESS
+    audience     VARCHAR(20)  NOT NULL DEFAULT 'ALL',  -- ALL | ADMIN | FACULTY
+    is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
+    tos_progress INT          CHECK (tos_progress IS NULL OR (tos_progress >= 0 AND tos_progress <= 100)),
+    expires_at   TIMESTAMPTZ,
+    created_by   UUID         REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 -- ── STUDENT MOODS ─────────────────────────────────────────────
@@ -301,6 +294,17 @@ CREATE TABLE student_moods (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, mood_date)
+);
+
+-- ── MODULE READS ──────────────────────────────────────────────
+-- Tracks which modules a student has read to completion
+CREATE TABLE module_reads (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    module_id  UUID        NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+    subject_id UUID        NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    read_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, module_id)
 );
 
 
@@ -356,6 +360,9 @@ CREATE INDEX idx_student_moods_date ON student_moods(mood_date);
 CREATE INDEX idx_student_moods_key  ON student_moods(mood_key);
 
 CREATE INDEX idx_questions_competency_codes ON questions USING gin(competency_codes);
+
+CREATE INDEX idx_module_reads_user    ON module_reads(user_id);
+CREATE INDEX idx_module_reads_subject ON module_reads(user_id, subject_id);
 
 
 -- ============================================================
@@ -434,24 +441,24 @@ LEFT JOIN subjects    s ON r.target_id  = s.id AND r.type = 'SUBJECT'
 LEFT JOIN assessments a ON r.target_id  = a.id AND r.type = 'ASSESSMENT';
 
 
--- Mirrors _calc_readiness() in analytics.py exactly:
---   Step 1 — per student x subject x type: AVG((score/items)*100)
---             PRE_ASSESSMENT excluded (baseline, not a board score).
---   Step 2 — per student x subject: MAX across all non-pre types.
---   Step 3 — zero-fill: approved subjects with no results → 0.
---   Step 4 — overall = SUM(per-subject scores) / total_approved_subjects
+-- V2 patch integrated: separate progress vs readiness calculations 
 CREATE OR REPLACE VIEW view_student_individual_readiness AS
 WITH
 approved_subjects AS (
-    SELECT id, name FROM subjects WHERE status = 'APPROVED'
+    SELECT id, name
+    FROM   subjects
+    WHERE  status = 'APPROVED'
 ),
 total_approved AS (
-    SELECT COUNT(*) AS cnt FROM approved_subjects
+    SELECT COUNT(*) AS cnt
+    FROM   approved_subjects
 ),
+-- Step 1: per student x subject x assessment type → average score %
 type_avgs AS (
     SELECT
         ar.user_id,
         a.subject_id,
+        a.type,
         AVG((ar.score::NUMERIC / NULLIF(ar.total_items, 0)) * 100) AS type_avg
     FROM  assessment_results ar
     JOIN  assessments a ON a.id = ar.assessment_id
@@ -459,30 +466,50 @@ type_avgs AS (
       AND a.type <> 'PRE_ASSESSMENT'
     GROUP BY ar.user_id, a.subject_id, a.type
 ),
-subject_best AS (
+-- Step 2: per student x subject → AVERAGE across all attempted type averages
+subject_readiness AS (
     SELECT
         user_id,
         subject_id,
-        MAX(type_avg) AS subject_score
+        AVG(type_avg) AS subject_score
     FROM  type_avgs
     GROUP BY user_id, subject_id
+),
+-- Progress: count distinct subjects the student has at least one non-PRE result for
+subject_attempted AS (
+    SELECT
+        ar.user_id,
+        COUNT(DISTINCT a.subject_id) AS subjects_attempted
+    FROM  assessment_results ar
+    JOIN  assessments a ON a.id = ar.assessment_id
+    WHERE a.subject_id IN (SELECT id FROM approved_subjects)
+      AND a.type <> 'PRE_ASSESSMENT'
+    GROUP BY ar.user_id
 )
 SELECT
-    u.id        AS user_id,
+    u.id         AS user_id,
     u.first_name,
     u.last_name,
+    -- READINESS: score-based average, zero-fills untouched subjects
     ROUND(
-        COALESCE(SUM(COALESCE(sb.subject_score, 0)), 0)::NUMERIC
+        COALESCE(SUM(COALESCE(sr.subject_score, 0)), 0)::NUMERIC
         / NULLIF((SELECT cnt FROM total_approved), 0),
-    1) AS readiness_percentage
-FROM       users             u
-JOIN       roles             r  ON r.id  = u.role_id
-CROSS JOIN approved_subjects ap
-LEFT  JOIN subject_best      sb ON sb.user_id    = u.id
-                                AND sb.subject_id = ap.id
+    1) AS readiness_percentage,
+    -- PROGRESS: attempt-based, how much of the curriculum has been touched
+    ROUND(
+        COALESCE(sa.subjects_attempted, 0)::NUMERIC
+        / NULLIF((SELECT cnt FROM total_approved), 0)
+        * 100,
+    1) AS progress_percentage
+FROM       users              u
+JOIN       roles              r   ON r.id  = u.role_id
+CROSS JOIN approved_subjects  ap
+LEFT JOIN  subject_readiness  sr  ON sr.user_id    = u.id
+                                 AND sr.subject_id = ap.id
+LEFT JOIN  subject_attempted  sa  ON sa.user_id    = u.id
 WHERE  r.name ILIKE 'student'
   AND  u.status = 'ACTIVE'
-GROUP BY u.id, u.first_name, u.last_name;
+GROUP BY u.id, u.first_name, u.last_name, sa.subjects_attempted;
 
 
 CREATE OR REPLACE VIEW view_general_readiness AS
@@ -512,7 +539,6 @@ SELECT
 -- §5  FUNCTIONS
 -- ============================================================
 
--- verify_user_login: only ACTIVE accounts pass.
 CREATE OR REPLACE FUNCTION verify_user_login(
     p_email        VARCHAR,
     p_raw_password VARCHAR
@@ -536,8 +562,7 @@ $$ LANGUAGE plpgsql;
 
 
 -- ============================================================
--- §6  ROLE-PERMISSION BACKFILLS  (idempotent — safe to re-run)
---     No-ops when the permissions are already correct.
+-- §6  ROLE-PERMISSION BACKFILLS
 -- ============================================================
 
 -- Replace legacy 'manage_whitelist' with granular permissions
@@ -559,6 +584,7 @@ SET permissions = permissions
     || '["view_tos","create_tos","edit_tos","delete_tos"]'::jsonb
 WHERE name = 'ADMIN'
   AND NOT (permissions @> '"view_tos"'::jsonb);
+
 -- Ensure FACULTY has view_student_analytics (pairs with view_analytics)
 UPDATE roles
 SET permissions = permissions || '["view_student_analytics"]'::jsonb
@@ -571,3 +597,164 @@ UPDATE roles
 SET permissions = permissions || '["view_announcements"]'::jsonb
 WHERE name IN ('FACULTY', 'ADMIN')
   AND NOT (permissions @> '"view_announcements"'::jsonb);
+
+  -- ============================================================
+-- patch_view_student_readiness_v2.sql
+--
+-- Updates view_student_individual_readiness to use the new
+-- weighted readiness formula that includes MOCK_EXAM as the
+-- primary readiness signal.
+--
+-- Weights (must match READINESS_WEIGHTS in analytics.py):
+--   MOCK_EXAM          40%  ← strongest board predictor
+--   FINAL_ASSESSMENT   30%
+--   POST_ASSESSMENT    20%
+--   QUIZ               10%
+--   PRE_ASSESSMENT      0%  ← baseline only, excluded
+--
+-- Reality-check blend: if student has taken mock exams,
+-- their latest mock avg blends into the score:
+--   mock < computed  → 70% computed + 30% mock
+--   mock >= computed → 80% computed + 20% mock
+--
+-- Safe to re-run (CREATE OR REPLACE).
+-- ============================================================
+
+CREATE OR REPLACE VIEW view_student_individual_readiness AS
+WITH
+approved_subjects AS (
+    SELECT id, name FROM subjects WHERE status = 'APPROVED'
+),
+total_approved AS (
+    SELECT COUNT(*) AS cnt FROM approved_subjects
+),
+-- Deduplicate results: keep only the LATEST attempt per assessment per user
+latest_results AS (
+    SELECT DISTINCT ON (ar.user_id, ar.assessment_id)
+           ar.user_id,
+           ar.assessment_id,
+           (ar.score::NUMERIC / NULLIF(ar.total_items, 0)) * 100 AS pct,
+           a.type,
+           a.subject_id
+    FROM   assessment_results ar
+    JOIN   assessments a ON a.id = ar.assessment_id
+    WHERE  a.subject_id IN (SELECT id FROM approved_subjects)
+      AND  a.type <> 'PRE_ASSESSMENT'
+    ORDER  BY ar.user_id, ar.assessment_id, ar.date_taken DESC
+),
+-- Step 1: AVG score per user × subject × assessment type (from deduped results)
+type_avgs AS (
+    SELECT
+        user_id,
+        subject_id,
+        type,
+        AVG(pct) AS type_avg
+    FROM   latest_results
+    GROUP  BY user_id, subject_id, type
+),
+-- Step 2: weighted score per user × subject
+--   Weights: MOCK_EXAM=0.40, FINAL_ASSESSMENT=0.30, POST_ASSESSMENT=0.20, QUIZ=0.10
+subject_weighted AS (
+    SELECT
+        user_id,
+        subject_id,
+        SUM(type_avg * CASE type
+            WHEN 'MOCK_EXAM'          THEN 0.40
+            WHEN 'FINAL_ASSESSMENT'   THEN 0.30
+            WHEN 'POST_ASSESSMENT'    THEN 0.20
+            WHEN 'QUIZ'               THEN 0.10
+            ELSE 0
+        END) AS weighted_sum,
+        SUM(CASE type
+            WHEN 'MOCK_EXAM'          THEN 0.40
+            WHEN 'FINAL_ASSESSMENT'   THEN 0.30
+            WHEN 'POST_ASSESSMENT'    THEN 0.20
+            WHEN 'QUIZ'               THEN 0.10
+            ELSE 0
+        END) AS weight_total
+    FROM   type_avgs
+    GROUP  BY user_id, subject_id
+),
+-- Per-subject normalised score
+subject_scores AS (
+    SELECT
+        user_id,
+        subject_id,
+        CASE WHEN weight_total > 0 THEN weighted_sum / weight_total ELSE 0 END AS subject_score
+    FROM subject_weighted
+),
+-- Step 3: raw readiness = SUM(per-subject scores) / total approved (zero-fill)
+raw_readiness AS (
+    SELECT
+        u.id AS user_id,
+        ROUND(
+            COALESCE(SUM(COALESCE(ss.subject_score, 0)), 0)::NUMERIC
+            / NULLIF((SELECT cnt FROM total_approved), 0),
+        1) AS raw_pct
+    FROM       users            u
+    JOIN       roles            r   ON r.id = u.role_id
+    CROSS JOIN approved_subjects ap
+    LEFT JOIN  subject_scores   ss  ON ss.user_id = u.id AND ss.subject_id = ap.id
+    WHERE  r.name ILIKE 'student' AND u.status = 'ACTIVE'
+    GROUP  BY u.id
+),
+-- Step 4: mock exam average per user (latest attempt per assessment)
+mock_avgs AS (
+    SELECT
+        ar.user_id,
+        AVG(pct) AS mock_avg
+    FROM (
+        SELECT DISTINCT ON (ar2.user_id, ar2.assessment_id)
+               ar2.user_id,
+               (ar2.score::NUMERIC / NULLIF(ar2.total_items, 0)) * 100 AS pct
+        FROM   assessment_results ar2
+        JOIN   assessments a2 ON a2.id = ar2.assessment_id
+        WHERE  a2.type = 'MOCK_EXAM'
+        ORDER  BY ar2.user_id, ar2.assessment_id, ar2.date_taken DESC
+    ) ar
+    GROUP BY ar.user_id
+),
+-- Progress: subjects touched vs total approved
+subject_attempted AS (
+    SELECT
+        ar.user_id,
+        COUNT(DISTINCT a.subject_id) AS subjects_attempted
+    FROM  assessment_results ar
+    JOIN  assessments a ON a.id = ar.assessment_id
+    WHERE a.subject_id IN (SELECT id FROM approved_subjects)
+      AND a.type <> 'PRE_ASSESSMENT'
+    GROUP BY ar.user_id
+)
+SELECT
+    rr.user_id,
+    u.first_name,
+    u.last_name,
+    -- Reality-check blend with mock exam average
+    ROUND(
+        CASE
+            WHEN ma.mock_avg IS NULL THEN
+                rr.raw_pct
+            WHEN ma.mock_avg < rr.raw_pct THEN
+                -- Mock below computed: pull down (quiz inflation guard)
+                rr.raw_pct * 0.70 + ma.mock_avg * 0.30
+            ELSE
+                -- Mock above computed: slight upward blend
+                rr.raw_pct * 0.80 + ma.mock_avg * 0.20
+        END,
+    1) AS readiness_percentage,
+    -- Progress percentage
+    ROUND(
+        COALESCE(sa.subjects_attempted, 0)::NUMERIC
+        / NULLIF((SELECT cnt FROM total_approved), 0)
+        * 100,
+    1) AS progress_percentage
+FROM       raw_readiness       rr
+JOIN       users               u   ON u.id = rr.user_id
+LEFT JOIN  mock_avgs           ma  ON ma.user_id = rr.user_id
+LEFT JOIN  subject_attempted   sa  ON sa.user_id = rr.user_id;
+
+
+CREATE OR REPLACE VIEW view_general_readiness AS
+SELECT ROUND(AVG(readiness_percentage), 2) AS overall_system_readiness
+FROM   view_student_individual_readiness
+WHERE  readiness_percentage IS NOT NULL;

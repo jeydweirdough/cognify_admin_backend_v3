@@ -174,60 +174,154 @@ def _cohort_analytics_data() -> dict:
         }
     }
 
-def _calc_readiness(user_id: str) -> dict:
-    # ── Overall percentage: single source of truth from the SQL view ──
-    # The view and this function previously diverged because the view included
-    # PRE_ASSESSMENT scores, while this function used MAX of non-pre types.
-    # Now the view matches this logic exactly, so we read from it directly
-    # to guarantee /analytics list, /analytics/{id}, mobile, and dashboard
-    # all return the same number.
-    view_row = fetchone(
-        "SELECT readiness_percentage FROM view_student_individual_readiness WHERE user_id = %s",
-        [user_id],
-    )
-    pct = float(view_row["readiness_percentage"] or 0) if view_row else 0.0
+# ── Assessment type weights for readiness ──────────────────────────────────
+# MOCK_EXAM and FINAL_ASSESSMENT are the strongest predictors of board
+# performance. QUIZ is formative so carries less weight. PRE_ASSESSMENT
+# is a baseline — excluded from readiness scoring.
+READINESS_WEIGHTS = {
+    "MOCK_EXAM":          0.40,
+    "FINAL_ASSESSMENT":   0.30,
+    "POST_ASSESSMENT":    0.20,
+    "QUIZ":               0.10,
+}
 
-    # ── Subject-level breakdown for chart display ──
-    # Mirrors the view logic: per-type AVG → MAX per subject → zero-fill.
-    all_subjects = fetchall("SELECT name FROM subjects WHERE status = 'APPROVED' ORDER BY name")
+def _calc_readiness(user_id: str) -> dict:
+    """
+    Weighted readiness formula:
+      MOCK_EXAM 40% · FINAL_ASSESSMENT 30% · POST_ASSESSMENT 20% · QUIZ 10%
+
+    Per-subject score = weighted average of available type scores (deduped by
+    latest attempt). Overall = sum of per-subject scores / total approved subjects
+    (zero-fill subjects with no activity).
+
+    Reality-check blend: if student has taken >=1 MOCK_EXAM, their latest mock
+    average blends into the final score — pulling readiness down when mock
+    performance trails quiz performance (prevents quiz inflation).
+    """
+    all_subjects   = fetchall("SELECT name FROM subjects WHERE status = 'APPROVED' ORDER BY name")
     total_subjects = len(all_subjects)
 
+    # Step 1: AVG score per (assessment_id deduped latest) grouped by type+subject
     rows = fetchall(
-        """SELECT a.type, s.name AS subject,
+        """SELECT atype, subject, AVG(pct) AS avg_score
+           FROM (
+               SELECT DISTINCT ON (ar.assessment_id)
+                      ar.assessment_id,
+                      a2.type  AS atype,
+                      s2.name  AS subject,
+                      (ar.score::numeric / NULLIF(ar.total_items, 0)) * 100 AS pct
+               FROM   assessment_results ar
+               JOIN   assessments a2 ON a2.id = ar.assessment_id
+               JOIN   subjects    s2 ON s2.id = a2.subject_id
+               WHERE  ar.user_id = %s
+                 AND  a2.type <> 'PRE_ASSESSMENT'
+               ORDER  BY ar.assessment_id, ar.date_taken DESC
+           ) deduped
+           GROUP BY atype, subject""",
+        [user_id],
+    )
+
+    # Step 2: accumulate weighted scores per subject
+    subject_map = {}
+    for r in rows:
+        subj  = r["subject"]
+        atype = r["atype"]
+        w     = READINESS_WEIGHTS.get(atype, 0.0)
+        if w == 0.0:
+            continue
+        if subj not in subject_map:
+            subject_map[subj] = {"weighted_sum": 0.0, "weight_total": 0.0,
+                                  "type_scores": {}, "pre_score": 0.0}
+        avg = float(r["avg_score"] or 0)
+        subject_map[subj]["weighted_sum"]  += avg * w
+        subject_map[subj]["weight_total"]  += w
+        subject_map[subj]["type_scores"][atype] = round(avg, 1)
+
+    # PRE_ASSESSMENT — stored for baseline display only
+    pre_rows = fetchall(
+        """SELECT s.name AS subject,
                   AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) AS avg_score
            FROM assessment_results ar
            JOIN assessments a ON a.id = ar.assessment_id
-           JOIN subjects s ON s.id = a.subject_id
-           WHERE ar.user_id = %s
-           GROUP BY a.type, s.name""",
+           JOIN subjects    s ON s.id = a.subject_id
+           WHERE ar.user_id = %s AND a.type = 'PRE_ASSESSMENT'
+           GROUP BY s.name""",
         [user_id],
     )
-
-    subject_map = {}
-    for r in rows:
+    for r in pre_rows:
         subj = r["subject"]
         if subj not in subject_map:
-            subject_map[subj] = {"current_score": 0, "pre_score": 0}
-        score = float(r["avg_score"] or 0)
-        if r["type"] == "PRE_ASSESSMENT":
-            subject_map[subj]["pre_score"] = score
-        else:
-            subject_map[subj]["current_score"] = max(subject_map[subj]["current_score"], score)
+            subject_map[subj] = {"weighted_sum": 0.0, "weight_total": 0.0,
+                                  "type_scores": {}, "pre_score": 0.0}
+        subject_map[subj]["pre_score"] = round(float(r["avg_score"] or 0), 1)
 
-    subject_scores = []
+    # Step 3: per-subject weighted score + subject_scores list
+    subject_scores     = []
+    total_weighted_sum = 0.0
     for s in all_subjects:
         name = s["name"]
-        data = subject_map.get(name, {"current_score": 0, "pre_score": 0})
+        data = subject_map.get(name, {"weighted_sum": 0.0, "weight_total": 0.0,
+                                       "type_scores": {}, "pre_score": 0.0})
+        wt      = data["weight_total"]
+        current = round(data["weighted_sum"] / wt, 1) if wt > 0 else 0.0
+        total_weighted_sum += current
         subject_scores.append({
             "subject":      name,
-            "preScore":     round(data["pre_score"], 1),
-            "currentScore": round(data["current_score"], 1),
+            "preScore":     data["pre_score"],
+            "currentScore": current,
             "fullMark":     100,
+            "typeScores":   data["type_scores"],
         })
 
-    level = "HIGH" if pct >= 80 else "MODERATE" if pct >= 65 else "LOW"
-    return {"percentage": pct, "level": level, "subject_scores": subject_scores, "total_subjects": total_subjects}
+    # Step 4: overall readiness (zero-fill = all approved subjects as denominator)
+    raw_readiness = round(total_weighted_sum / max(1, total_subjects), 1)
 
+    # Step 5: mock exam reality-check blend
+    # Latest mock average acts as a floor signal. When mock < computed,
+    # blend 70/30 to prevent quiz performance masking poor exam results.
+    mock_row = fetchone(
+        """SELECT AVG(pct) AS mock_avg
+           FROM (
+               SELECT DISTINCT ON (ar.assessment_id)
+                      (ar.score::numeric / NULLIF(ar.total_items, 0)) * 100 AS pct
+               FROM   assessment_results ar
+               JOIN   assessments a ON a.id = ar.assessment_id
+               WHERE  ar.user_id = %s AND a.type = 'MOCK_EXAM'
+               ORDER  BY ar.assessment_id, ar.date_taken DESC
+           ) latest_mocks""",
+        [user_id],
+    )
+    mock_avg = float(mock_row["mock_avg"] or 0) \
+               if mock_row and mock_row["mock_avg"] is not None else None
+
+    if mock_avg is not None:
+        if mock_avg < raw_readiness:
+            pct = round(raw_readiness * 0.70 + mock_avg * 0.30, 1)
+        else:
+            pct = round(raw_readiness * 0.80 + mock_avg * 0.20, 1)
+    else:
+        pct = raw_readiness
+
+    # Step 6: progress % (subjects touched / total approved)
+    prog_row = fetchone(
+        """SELECT COUNT(DISTINCT a.subject_id)::numeric / NULLIF(%s, 0) * 100 AS pct
+           FROM assessment_results ar
+           JOIN assessments a ON a.id = ar.assessment_id
+           WHERE ar.user_id = %s AND a.type <> 'PRE_ASSESSMENT'""",
+        [total_subjects, user_id],
+    )
+    progress = round(float(prog_row["pct"] or 0), 1) if prog_row else 0.0
+
+    level = "HIGH" if pct >= 80 else "MODERATE" if pct >= 65 else "LOW"
+    return {
+        "percentage":     pct,
+        "raw_readiness":  raw_readiness,
+        "mock_avg":       mock_avg,
+        "progress":       progress,
+        "level":          level,
+        "subject_scores": subject_scores,
+        "total_subjects": total_subjects,
+    }
 def _calc_streak(user_id: str) -> int:
     rows = fetchall(
         """SELECT DISTINCT date_taken::date AS day
@@ -285,12 +379,25 @@ def _student_full_record(identifier: str) -> dict | None:
     readiness = _calc_readiness(user_id)
     student["readinessProbability"] = readiness["level"]
     student["overallAverage"]       = readiness["percentage"]
+    student["rawReadiness"]         = readiness["raw_readiness"]   # pre-blend score
+    student["mockExamAvg"]          = readiness["mock_avg"]        # latest mock avg or null
+    student["progressPercentage"]   = readiness["progress"]
     student["subjectScores"]        = readiness["subject_scores"]
 
+    # Deduplicate by assessment_id — keep only the LATEST attempt per assessment.
+    # Retakes are re-attempts, not separate assessments, so they must not
+    # inflate the "taken" or "passed" count.
     stats = fetchone(
-        """SELECT COUNT(*) AS total_taken,
-                  SUM(CASE WHEN (score::numeric/NULLIF(total_items,0)) >= 0.75 THEN 1 ELSE 0 END) AS total_passed
-           FROM assessment_results WHERE user_id = %s""",
+        """SELECT
+               COUNT(*) AS total_taken,
+               SUM(CASE WHEN (score::numeric/NULLIF(total_items,0)) >= 0.75 THEN 1 ELSE 0 END) AS total_passed
+           FROM (
+               SELECT DISTINCT ON (assessment_id)
+                      assessment_id, score, total_items
+               FROM assessment_results
+               WHERE user_id = %s
+               ORDER BY assessment_id, date_taken DESC
+           ) latest""",
         [user_id],
     )
     student["assessmentsTaken"]  = int(stats["total_taken"] or 0)
@@ -312,17 +419,55 @@ def _student_full_record(identifier: str) -> dict | None:
     student["passProbabilityKey"] = _prob["key"]
     student["passProbabilityLabel"] = _prob["label"]
 
+    # Mock Exam Trajectory — includes MOCK_EXAM and FINAL_ASSESSMENT only.
+    # POST_ASSESSMENT was incorrectly used here before; those are module-level
+    # assessments, not board-simulation exams. Use latest attempt per assessment
+    # so retakes show as a single point on the trajectory line.
     mock_history = fetchall(
-        """SELECT ar.date_taken AS date, ((ar.score::numeric/NULLIF(ar.total_items,0))*100) AS pct_score, a.title AS label
-           FROM assessment_results ar JOIN assessments a ON a.id = ar.assessment_id
-           WHERE ar.user_id = %s AND a.type = 'POST_ASSESSMENT'
-           ORDER BY ar.date_taken DESC LIMIT 10""",
+        """SELECT ar.date_taken AS date,
+                  ((ar.score::numeric/NULLIF(ar.total_items,0))*100) AS pct_score,
+                  a.title AS label, a.type AS atype
+           FROM (
+               SELECT DISTINCT ON (assessment_id)
+                      assessment_id, user_id, score, total_items, date_taken
+               FROM   assessment_results
+               WHERE  user_id = %s
+               ORDER  BY assessment_id, date_taken DESC
+           ) ar
+           JOIN assessments a ON a.id = ar.assessment_id
+           WHERE a.type IN ('MOCK_EXAM', 'FINAL_ASSESSMENT')
+           ORDER BY ar.date_taken ASC
+           LIMIT 20""",
         [user_id],
     )
-    student["mockExamHistory"] = [{"date": m["date"].strftime("%b %d"), "score": round(float(m["pct_score"] or 0),1), "label": m["label"]} for m in mock_history]
+    student["mockExamHistory"] = [
+        {
+            "date":  m["date"].strftime("%b %d"),
+            "score": round(float(m["pct_score"] or 0), 1),
+            "label": m["label"],
+            "type":  m["atype"],
+        }
+        for m in mock_history
+    ]
 
-    student["materialsRead"]  = 0
-    student["totalMaterials"] = 0
+    # Count modules the student has marked as read vs total approved modules
+    materials_read_row = fetchone(
+        "SELECT COUNT(DISTINCT module_id) AS c FROM module_reads WHERE user_id = %s",
+        [user_id],
+    )
+    total_modules_row = fetchone(
+        "SELECT COUNT(*) AS c FROM modules WHERE status = 'APPROVED' AND parent_id IS NULL",
+    )
+    student["materialsRead"]  = int(materials_read_row["c"] or 0) if materials_read_row else 0
+    student["totalMaterials"] = int(total_modules_row["c"] or 0) if total_modules_row else 0
+
+    # Total assessments created in the system (approved) — system-wide denominator
+    # so admin/faculty can see how many the student has attempted out of everything available
+    total_assessments_row = fetchone(
+        "SELECT COUNT(*) AS c FROM assessments WHERE status = 'APPROVED'",
+    )
+    student["totalAssessmentsInSystem"] = int(total_assessments_row["c"] or 0) if total_assessments_row else 0
+    student["totalModulesInSystem"]     = student["totalMaterials"]  # same value, explicit alias for clarity
     student["streak"] = _calc_streak(user_id)
 
     # Note: Use ILIKE %s and pass '%log%' in the parameters to prevent psycopg2 string formatting crashes
@@ -558,6 +703,145 @@ def _get_recommended_modules(user_id: str, limit: int = 3) -> list:
         ]
 
 
+@mobile_prog_router.get("/progress/subjects/{subject_id}/assessments")
+async def mobile_subject_assessments(request: Request, subject_id: str):
+    """
+    Return all approved assessments for a subject with per-student unlock/done/score status.
+
+    Unlock logic (sequential gate):
+      1. PRE_ASSESSMENT  — always unlocked
+      2. QUIZ            — unlocked after student has submitted PRE_ASSESSMENT
+      3. POST_ASSESSMENT — unlocked after ALL quizzes for the subject are done (score recorded)
+      4. MOCK_EXAM /
+         FINAL_ASSESSMENT — unlocked after POST_ASSESSMENT is done
+    """
+    auth = mobile_permission_required("mobile_view_progress")(request)
+    user_id = auth.user_id
+
+    # ── Fetch all approved assessments for this subject ──────────────────────
+    assessments = fetchall(
+        """SELECT a.id, a.title, a.type, a.items, a.module_id
+           FROM assessments a
+           WHERE a.subject_id = %s AND a.status = 'APPROVED'
+           ORDER BY
+             CASE a.type
+               WHEN 'PRE_ASSESSMENT'   THEN 1
+               WHEN 'QUIZ'             THEN 2
+               WHEN 'PRACTICE_TEST'    THEN 3
+               WHEN 'POST_ASSESSMENT'  THEN 4
+               WHEN 'MOCK_EXAM'        THEN 5
+               WHEN 'FINAL_ASSESSMENT' THEN 6
+               ELSE 7
+             END,
+             a.created_at ASC""",
+        [subject_id],
+    )
+
+    if not assessments:
+        return ok({
+            "pre_assessment_done":       False,
+            "all_quizzes_done":          False,
+            "post_assessment_unlocked":  False,
+            "post_assessment_done":      False,
+            "final_unlocked":            False,
+            "assessments":               [],
+        })
+
+    assessment_ids = [str(a["id"]) for a in assessments]
+
+    # ── Fetch the student's best score per assessment ────────────────────────
+    if assessment_ids:
+        placeholders = ",".join(["%s"] * len(assessment_ids))
+        results = fetchall(
+            f"""SELECT ar.assessment_id,
+                       MAX((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) AS best_pct,
+                       COUNT(*) AS attempt_count
+                FROM assessment_results ar
+                WHERE ar.user_id = %s
+                  AND ar.assessment_id IN ({placeholders})
+                GROUP BY ar.assessment_id""",
+            [user_id] + assessment_ids,
+        )
+    else:
+        results = []
+
+    score_map = {
+        str(r["assessment_id"]): {
+            "best_score":    round(float(r["best_pct"] or 0), 1),
+            "attempt_count": int(r["attempt_count"]),
+        }
+        for r in results
+    }
+
+    # ── Fetch which modules in this subject the student has read ─────────────
+    read_rows = fetchall(
+        "SELECT module_id FROM module_reads WHERE user_id = %s AND subject_id = %s",
+        [user_id, subject_id],
+    )
+    read_module_ids = {str(r["module_id"]) for r in read_rows}
+
+    # ── Derive unlock gates ──────────────────────────────────────────────────
+    pre_ids  = [str(a["id"]) for a in assessments if a["type"] == "PRE_ASSESSMENT"]
+    quiz_ids = [str(a["id"]) for a in assessments if a["type"] in ("QUIZ", "PRACTICE_TEST")]
+    post_ids = [str(a["id"]) for a in assessments if a["type"] == "POST_ASSESSMENT"]
+
+    pre_done     = any(score_map.get(aid, {}).get("attempt_count", 0) > 0 for aid in pre_ids) if pre_ids else True
+    quizzes_done = all(score_map.get(aid, {}).get("attempt_count", 0) > 0 for aid in quiz_ids) if quiz_ids else True
+    post_done    = any(score_map.get(aid, {}).get("attempt_count", 0) > 0 for aid in post_ids) if post_ids else False
+    post_unlocked  = pre_done and quizzes_done
+    final_unlocked = post_done
+
+    # Check all modules in this subject are read (required before any quiz)
+    all_subject_modules = fetchall(
+        "SELECT id FROM modules WHERE subject_id = %s AND status = 'APPROVED' AND parent_id IS NULL",
+        [subject_id],
+    )
+    all_modules_read = all(str(m["id"]) in read_module_ids for m in all_subject_modules) if all_subject_modules else False
+
+    def _is_locked(atype: str, a: dict) -> bool:
+        if atype == "PRE_ASSESSMENT":
+            return False
+        if atype in ("QUIZ", "PRACTICE_TEST"):
+            # Quiz for a specific module requires that module to be read
+            module_id = str(a.get("module_id") or "")
+            if module_id:
+                return module_id not in read_module_ids or not pre_done
+            # Quiz not linked to specific module — require pre done + all modules read
+            return not pre_done or not all_modules_read
+        if atype == "POST_ASSESSMENT":
+            return not post_unlocked
+        if atype in ("MOCK_EXAM", "FINAL_ASSESSMENT"):
+            return not final_unlocked
+        return False
+
+    # ── Build response ───────────────────────────────────────────────────────
+    items = []
+    for a in assessments:
+        aid   = str(a["id"])
+        atype = a["type"]
+        stats = score_map.get(aid, {})
+        items.append({
+            "id":         aid,
+            "title":      a["title"],
+            "type":       atype,
+            "items":      a["items"] or 0,
+            "module_id":  str(a["module_id"]) if a.get("module_id") else None,
+            "locked":     _is_locked(atype, a),
+            "done":       stats.get("attempt_count", 0) > 0,
+            "best_score": stats.get("best_score", None) if stats.get("attempt_count", 0) > 0 else None,
+        })
+
+    return ok({
+        "pre_assessment_done":      pre_done,
+        "all_quizzes_done":         quizzes_done,
+        "post_assessment_unlocked": post_unlocked,
+        "post_assessment_done":     post_done,
+        "final_unlocked":           final_unlocked,
+        "all_modules_read":         all_modules_read,
+        "assessments":              items,
+    })
+
+
 @mobile_prog_router.get("/progress/recommendations")
 async def mobile_progress_recommendations(request: Request):
     """Return personalized module recommendations based on the student's weak subjects."""
@@ -571,10 +855,13 @@ async def mobile_progress(request: Request):
     """Return the authenticated student's own readiness & assessment results."""
     auth = mobile_permission_required("mobile_view_progress")(request)
 
-    readiness_row = fetchone(
-        "SELECT readiness_percentage FROM view_student_individual_readiness WHERE user_id = %s",
+    view_row = fetchone(
+        "SELECT readiness_percentage, progress_percentage FROM view_student_individual_readiness WHERE user_id = %s",
         [auth.user_id],
     )
+    readiness_pct = float(view_row["readiness_percentage"] or 0) if view_row else 0.0
+    progress_pct  = float(view_row["progress_percentage"]  or 0) if view_row else 0.0
+
     results = fetchall(
         """SELECT ar.id, ar.assessment_id, ar.score, ar.total_items, ar.date_taken,
                   a.title AS assessment_title, a.type AS assessment_type,
@@ -591,8 +878,85 @@ async def mobile_progress(request: Request):
         r["assessment_id"] = str(r["assessment_id"])
         r["date_taken"]    = r["date_taken"].isoformat()
 
+    # ── Subject-level breakdown — mirrors _calc_readiness AVG logic ──
+    # Step 1: AVG score per (subject × assessment type), excluding PRE_ASSESSMENT
+    # Step 2: AVG those type averages per subject  ← was MAX, now AVG
+    type_rows = fetchall(
+        """SELECT a.type, s.name AS subject,
+                  AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) AS avg_score
+           FROM assessment_results ar
+           JOIN assessments a ON a.id = ar.assessment_id
+           JOIN subjects s ON s.id = a.subject_id
+           WHERE ar.user_id = %s
+             AND a.type <> 'PRE_ASSESSMENT'
+           GROUP BY a.type, s.name""",
+        [auth.user_id],
+    )
+    pre_rows = fetchall(
+        """SELECT s.name AS subject,
+                  AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) AS avg_score
+           FROM assessment_results ar
+           JOIN assessments a ON a.id = ar.assessment_id
+           JOIN subjects s ON s.id = a.subject_id
+           WHERE ar.user_id = %s
+             AND a.type = 'PRE_ASSESSMENT'
+           GROUP BY s.name""",
+        [auth.user_id],
+    )
+
+    subject_map: dict = {}
+    for r in type_rows:
+        subj = r["subject"]
+        if subj not in subject_map:
+            subject_map[subj] = {"type_scores": [], "pre_score": 0.0}
+        subject_map[subj]["type_scores"].append(float(r["avg_score"] or 0))
+    for r in pre_rows:
+        subj = r["subject"]
+        if subj not in subject_map:
+            subject_map[subj] = {"type_scores": [], "pre_score": 0.0}
+        subject_map[subj]["pre_score"] = float(r["avg_score"] or 0)
+
+    all_subjects = fetchall("SELECT name FROM subjects WHERE status = 'APPROVED' ORDER BY name")
+    subject_scores = []
+    for s in all_subjects:
+        name = s["name"]
+        data = subject_map.get(name, {"type_scores": [], "pre_score": 0.0})
+        type_scores = data["type_scores"]
+        current = round(sum(type_scores) / len(type_scores), 1) if type_scores else 0.0
+        subject_scores.append({
+            "subject":      name,
+            "preScore":     round(data["pre_score"], 1),
+            "currentScore": current,
+        })
+
+    # Count unique assessments taken (dedupe by assessment_id — retakes are not
+    # separate assessments, they are re-attempts of the same one)
+    seen_assessment_ids: set = set()
+    for r in results:
+        seen_assessment_ids.add(r["assessment_id"])
+    unique_assessments_taken = len(seen_assessment_ids)
+
+    # Compute mock exam avg for mobile display
+    mock_row = fetchone(
+        """SELECT AVG(pct) AS mock_avg
+           FROM (
+               SELECT DISTINCT ON (ar.assessment_id)
+                      (ar.score::numeric / NULLIF(ar.total_items, 0)) * 100 AS pct
+               FROM   assessment_results ar
+               JOIN   assessments a ON a.id = ar.assessment_id
+               WHERE  ar.user_id = %s AND a.type = 'MOCK_EXAM'
+               ORDER  BY ar.assessment_id, ar.date_taken DESC
+           ) m""",
+        [auth.user_id],
+    )
+    mock_exam_avg = round(float(mock_row["mock_avg"] or 0), 1) \
+                   if mock_row and mock_row["mock_avg"] is not None else None
+
     return ok({
-        "readiness_percentage": float(readiness_row["readiness_percentage"]) if readiness_row and readiness_row.get("readiness_percentage") else 0,
-        "results": results,
-        "total_assessments_taken": len(results),
+        "readiness_percentage": readiness_pct,
+        "progress_percentage":  progress_pct,
+        "results":              results,
+        "total_assessments_taken": unique_assessments_taken,
+        "subject_scores":       subject_scores,
+        "mock_exam_avg":        mock_exam_avg,
     })

@@ -26,12 +26,14 @@ mobile_auth_router = APIRouter(prefix="/api/mobile/auth", tags=["mobile-auth"])
 
 def _fetch_user_by_email(email: str):
     return fetchone(
-        """SELECT u.id, u.email, u.password, u.status,
-                  u.first_name, u.last_name, u.cvsu_id,
-                  r.name AS role
-           FROM users u
-           JOIN roles r ON u.role_id = r.id
-           WHERE LOWER(u.email) = %s""",
+        """
+        SELECT u.id, u.email, u.password, u.status,
+               u.first_name, u.last_name, u.cvsu_id,
+               r.name AS role
+        FROM users u
+        JOIN roles r ON u.role_id = r.id
+        WHERE LOWER(u.email) = %s
+        """,
         [email.strip().lower()],
     )
 
@@ -300,6 +302,9 @@ async def mobile_login(request: Request):
     user = _fetch_user_by_email(body["email"])
     if not user:
         return unauthorized("Invalid credentials")
+    print("Fetched user for web login:", user)  # Debug log
+    print("Provided password (raw):", body["password"])  # Debug log
+    print("Stored password hash:", user["password"])  # Debug log
     if not bcrypt.checkpw(body["password"].encode(), user["password"].encode()):
         return unauthorized("Invalid credentials")
 
