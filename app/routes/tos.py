@@ -52,8 +52,9 @@ from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import clean_str
 from app.utils.log import log_action
 
-admin_tos_router  = APIRouter(prefix="/api/web/admin/tos",  tags=["tos"])
-mobile_tos_router = APIRouter(prefix="/api/mobile/tos",     tags=["tos-mobile"])
+admin_tos_router  = APIRouter(prefix="/api/web/admin/tos",    tags=["tos"])
+faculty_tos_router = APIRouter(prefix="/api/web/faculty/tos", tags=["tos-faculty"])
+mobile_tos_router = APIRouter(prefix="/api/mobile/tos",      tags=["tos-mobile"])
 
 # ── Extractor module (lives at app/extractor/extractor.py) ────────────────────
 from app.extractor import extractor as _ext
@@ -352,6 +353,28 @@ async def delete_tos_version(tos_id: str, request: Request):
     execute("DELETE FROM tos_versions WHERE id = %s", [tos_id])
     log_action("Deleted TOS version", existing["label"], tos_id, user_id=auth.user_id, ip=auth.ip)
     return no_content()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FACULTY — GET ACTIVE TOS  (read-only, faculty members)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@faculty_tos_router.get("/active")
+async def get_active_tos_faculty(request: Request):
+    auth = permission_required("view_tos")(request)
+
+    row = fetchone("""
+        SELECT id, label, academic_year, data, extracted_at, updated_at
+        FROM tos_versions
+        WHERE status = 'ACTIVE'
+        ORDER BY updated_at DESC
+        LIMIT 1
+    """)
+
+    if not row:
+        return not_found("No active TOS version found")
+
+    return ok(_serialize(row))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

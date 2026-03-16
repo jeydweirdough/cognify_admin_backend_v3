@@ -26,6 +26,7 @@ def _format_module(m: dict) -> dict:
         m["parent_id"] = str(m["parent_id"])
     m["fileUrl"] = m.pop("file_url", None)
     m["fileName"] = m.pop("file_name", None)
+    m["tos_section"] = m.get("tos_section")
     # Ensure type defaults to MODULE for backwards compatibility
     if not m.get("type"):
         m["type"] = "MODULE"
@@ -145,6 +146,112 @@ async def admin_create(request: Request):
     )
     log_action("Created subject", s["name"], str(s["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(_get_subject_tree(str(s["id"]), "ADMIN"))
+
+@admin_subjects_router.post("/bulk/from-tos")
+async def admin_bulk_create_from_tos(request: Request):
+    """
+    Create subjects in bulk from TOS extracted data.
+    
+    Accepts:
+    {
+      "subjects": [
+        {
+          "subject": "Subject Name",
+          "weight": "20%",
+          "board": "Psychologist",
+          ...other TOS fields
+        }
+      ]
+    }
+    
+    Returns:
+    {
+      "created": [{ subject object }, ...],
+      "existing": [{ name: "...", reason: "..." }, ...],
+      "failed": [{ name: "...", reason: "..." }, ...]
+    }
+    """
+    auth = permission_required("create_subjects")(request)
+    try: body = await request.json()
+    except Exception: body = {}
+    
+    tos_subjects = body.get("subjects", [])
+    if not isinstance(tos_subjects, list):
+        return error("subjects must be an array", 400)
+    
+    created = []
+    existing = []
+    failed = []
+    
+    for tos_subj in tos_subjects:
+        subj_name = clean_str(tos_subj.get("subject", ""))
+        if not subj_name:
+            failed.append({"name": "Unknown", "reason": "Missing subject name"})
+            continue
+        
+        # Check if subject with this name already exists
+        existing_subject = fetchone(
+            "SELECT id, name FROM subjects WHERE LOWER(name) = LOWER(%s)",
+            [subj_name]
+        )
+        
+        if existing_subject:
+            existing.append({
+                "name": existing_subject["name"],
+                "reason": "Subject already exists"
+            })
+            continue
+        
+        try:
+            # Extract weight as percentage (e.g., "20%" -> 20)
+            weight_str = str(tos_subj.get("weight", "0")).strip().rstrip("%")
+            try:
+                weight = int(float(weight_str))
+            except (ValueError, TypeError):
+                weight = 0
+            
+            # Create the subject
+            new_subj = execute_returning(
+                """INSERT INTO subjects (name, description, color, weight, passing_rate, status, created_by)
+                   VALUES (%s, %s, %s, %s, %s, 'APPROVED', %s) RETURNING *""",
+                [
+                    subj_name,
+                    clean_str(tos_subj.get("board", "")),  # Use board as description
+                    "#6366f1",  # Default color
+                    weight,
+                    75,  # Default passing rate
+                    auth.user_id
+                ]
+            )
+            
+            log_action("Created subject from TOS", subj_name, str(new_subj["id"]), 
+                      user_id=auth.user_id, ip=auth.ip)
+            
+            # Return simplified subject object
+            created.append({
+                "id": str(new_subj["id"]),
+                "name": new_subj["name"],
+                "weight": new_subj["weight"],
+                "description": new_subj["description"],
+                "color": new_subj["color"]
+            })
+        except Exception as e:
+            failed.append({
+                "name": subj_name,
+                "reason": str(e)
+            })
+    
+    return ok({
+        "created": created,
+        "existing": existing,
+        "failed": failed,
+        "summary": {
+            "total": len(tos_subjects),
+            "created_count": len(created),
+            "existing_count": len(existing),
+            "failed_count": len(failed)
+        }
+    })
 
 @admin_subjects_router.put("/{subject_id}")
 async def admin_update(request: Request, subject_id: str):
@@ -269,11 +376,11 @@ def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
         module_type = "MODULE"
 
     topic = execute_returning(
-        """INSERT INTO modules (subject_id, parent_id, title, description, content, type, format, file_url, file_name, sort_order, status, created_by)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+        """INSERT INTO modules (subject_id, parent_id, title, description, content, type, format, file_url, file_name, tos_section, sort_order, status, created_by)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
         [subject_id, body.get("parent_id"), clean_str(body["title"]), clean_str(body.get("description")), 
          content_payload, module_type, body.get("format", "TEXT"), body.get("fileUrl"), body.get("fileName"),
-         body.get("sort_order", 0), status, auth.user_id],
+         body.get("tos_section"), body.get("sort_order", 0), status, auth.user_id],
     )
     log_action("Added module", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
     return created(_format_module(topic))
@@ -294,6 +401,7 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
             "format": body.get("format", existing.get("format", "TEXT")),
             "file_url": body.get("fileUrl", existing.get("file_url")),
             "file_name": body.get("fileName", existing.get("file_name")),
+            "tos_section": body.get("tos_section", existing.get("tos_section")),
             "sort_order": body.get("sort_order", existing["sort_order"])
         }
         
@@ -328,12 +436,13 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     updated = execute_returning(
         """UPDATE modules SET title = %s, description = %s, content = %s,
                               type = %s, format = %s, file_url = %s, file_name = %s,
-                              sort_order = %s, status = 'APPROVED'
+                              tos_section = %s, sort_order = %s, status = 'APPROVED'
            WHERE id = %s RETURNING *""",
         [clean_str(body.get("title", existing["title"])), clean_str(body.get("description", existing.get("description"))),
          content_payload, body.get("type", existing.get("type", "MODULE")),
          body.get("format", existing.get("format", "TEXT")), body.get("fileUrl", existing.get("file_url")),
-         body.get("fileName", existing.get("file_name")), body.get("sort_order", existing["sort_order"]), module_id],
+         body.get("fileName", existing.get("file_name")), body.get("tos_section", existing.get("tos_section")), 
+         body.get("sort_order", existing["sort_order"]), module_id],
     )
     
     formatted = _format_module(updated)

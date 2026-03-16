@@ -103,6 +103,7 @@ CREATE TABLE whitelist (
     email            VARCHAR(255) NOT NULL UNIQUE,
     role             VARCHAR(20)  NOT NULL DEFAULT 'STUDENT'
                      CHECK (role IN ('STUDENT','FACULTY','ADMIN')),
+    year_level       VARCHAR(20),
     status           VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
                      CHECK (status IN ('PENDING','REGISTERED')),
     added_by         UUID         REFERENCES users(id) ON DELETE SET NULL,
@@ -138,6 +139,7 @@ CREATE TABLE modules (
                 CHECK (format IN ('TEXT','PDF')),
     file_url    TEXT,
     file_name   VARCHAR(255),
+    tos_section VARCHAR(255),
     sort_order  INT          NOT NULL DEFAULT 0,
     status      VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
                 CHECK (status IN ('PENDING','APPROVED','REJECTED','REMOVED','REVISION_REQUESTED')),

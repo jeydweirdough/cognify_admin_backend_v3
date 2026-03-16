@@ -18,7 +18,11 @@ admin_assess_router   = APIRouter(prefix="/api/web/admin/assessments",       tag
 faculty_assess_router = APIRouter(prefix="/api/web/faculty/assessments",     tags=["faculty-assessments"])
 mobile_assess_router  = APIRouter(prefix="/api/mobile/student/assessments",  tags=["mobile-assessments"])
 
-VALID_TYPES    = {"PRE_ASSESSMENT", "QUIZ", "POST_ASSESSMENT"}
+VALID_TYPES    = {
+    "DIAGNOSTIC", "PRE_ASSESSMENT", "QUIZ", 
+    "PRACTICE_TEST", "MOCK_EXAM", 
+    "POST_ASSESSMENT", "FINAL_ASSESSMENT"
+}
 VALID_STATUSES = {"DRAFT", "PENDING", "APPROVED", "REJECTED", "REVISION_REQUESTED"}
 
 _SELECT = """
@@ -305,6 +309,7 @@ async def faculty_update(request: Request, assess_id: str):
         "type":       (body.get("type", existing["type"]) or "").upper() or existing["type"],
         "subject_id": body.get("subject_id", str(existing["subject_id"]) if existing.get("subject_id") else None),
         "module_id":  body.get("module_id",  str(existing["module_id"])  if existing.get("module_id")  else None),
+        "is_global":  body.get("is_global", existing.get("is_global", False)),
         "items":      len(questions) if questions is not None else existing.get("items", 0),
     }
     if questions is not None:
@@ -469,7 +474,7 @@ def _create(body: dict, auth, auto_approve: bool):
     questions = body.get("questions", [])
 
     a = execute_returning(
-        "INSERT INTO assessments (title, type, subject_id, module_id, items, status, author_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
+        "INSERT INTO assessments (title, type, subject_id, module_id, items, status, author_id, is_global) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
         [
             clean_str(body["title"]),
             atype,
@@ -478,6 +483,7 @@ def _create(body: dict, auth, auto_approve: bool):
             len(questions),
             status,
             auth.user_id,
+            body.get("is_global", False),
         ],
     )
 
@@ -511,7 +517,7 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
     a = execute_returning(
         """UPDATE assessments
            SET title = %s, type = %s, subject_id = %s, module_id = %s,
-               items = %s, status = %s, updated_at = NOW()
+               items = %s, status = %s, is_global = %s, updated_at = NOW()
            WHERE id = %s RETURNING *""",
         [
             clean_str(body.get("title", existing["title"])),
@@ -520,6 +526,7 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
             body.get("module_id",  existing.get("module_id")),
             item_count,
             new_status,
+            body.get("is_global", existing.get("is_global", False)),
             assess_id,
         ],
     )
