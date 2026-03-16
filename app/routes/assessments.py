@@ -87,14 +87,15 @@ def _fmt(a: dict, include_questions=False) -> dict:
     return a
 
 
-def _list(request: Request, extra_where="", extra_params=None):
+def _list(request: Request, extra_where="", extra_params=None, include_questions=False):
     page, per_page = get_page_params(request)
     search = get_search(request)
     atype  = get_filter(request, "type", VALID_TYPES)
     status = get_filter(request, "status", VALID_STATUSES)
     subject_id = (request.query_params.get("subject_id") or "").strip() or None
 
-    sql    = [_SELECT, "WHERE 1=1"]
+    base_select = _SELECT_WITH_Q if include_questions else _SELECT
+    sql    = [base_select, "WHERE 1=1"]
     params = []
 
     if extra_where:
@@ -114,9 +115,11 @@ def _list(request: Request, extra_where="", extra_params=None):
         sql.append("AND a.subject_id = %s")
         params.append(subject_id)
 
+    if include_questions:
+        sql.append("GROUP BY a.id, s.name, m.title, u.first_name, u.last_name")
     sql.append("ORDER BY a.created_at DESC")
     result = paginate(" ".join(sql), params, page, per_page)
-    result["items"] = [_fmt(a) for a in result["items"]]
+    result["items"] = [_fmt(a, include_questions=include_questions) for a in result["items"]]
     return result
 
 
@@ -309,7 +312,6 @@ async def faculty_update(request: Request, assess_id: str):
         "type":       (body.get("type", existing["type"]) or "").upper() or existing["type"],
         "subject_id": body.get("subject_id", str(existing["subject_id"]) if existing.get("subject_id") else None),
         "module_id":  body.get("module_id",  str(existing["module_id"])  if existing.get("module_id")  else None),
-        "is_global":  body.get("is_global", existing.get("is_global", False)),
         "items":      len(questions) if questions is not None else existing.get("items", 0),
     }
     if questions is not None:
@@ -381,7 +383,7 @@ async def faculty_delete(request: Request, assess_id: str):
 @mobile_assess_router.get("")
 async def mobile_list(request: Request):
     auth = mobile_permission_required("mobile_view_assessments")(request)
-    return ok(_list(request, "AND a.status = 'APPROVED'"))
+    return ok(_list(request, "AND a.status = 'APPROVED'", include_questions=True))
 
 
 @mobile_assess_router.get("/{assess_id}")
@@ -474,7 +476,7 @@ def _create(body: dict, auth, auto_approve: bool):
     questions = body.get("questions", [])
 
     a = execute_returning(
-        "INSERT INTO assessments (title, type, subject_id, module_id, items, status, author_id, is_global) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+        "INSERT INTO assessments (title, type, subject_id, module_id, items, status, author_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
         [
             clean_str(body["title"]),
             atype,
@@ -483,7 +485,6 @@ def _create(body: dict, auth, auto_approve: bool):
             len(questions),
             status,
             auth.user_id,
-            body.get("is_global", False),
         ],
     )
 
@@ -517,7 +518,7 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
     a = execute_returning(
         """UPDATE assessments
            SET title = %s, type = %s, subject_id = %s, module_id = %s,
-               items = %s, status = %s, is_global = %s, updated_at = NOW()
+               items = %s, status = %s, updated_at = NOW()
            WHERE id = %s RETURNING *""",
         [
             clean_str(body.get("title", existing["title"])),
@@ -526,7 +527,6 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
             body.get("module_id",  existing.get("module_id")),
             item_count,
             new_status,
-            body.get("is_global", existing.get("is_global", False)),
             assess_id,
         ],
     )
