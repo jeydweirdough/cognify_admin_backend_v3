@@ -29,6 +29,8 @@ def _fmt(u: dict) -> dict:
         u["last_login"] = u["last_login"].isoformat()
     if u.get("date_created"):
         u["date_created"] = u["date_created"].isoformat()
+    if u.get("photo_avatar"):
+        u["photo_avatar"] = str(u["photo_avatar"])
     return u
 
 
@@ -148,10 +150,10 @@ async def admin_create(request: Request):
         """INSERT INTO users
                (cvsu_id, first_name, middle_name, last_name,
                 email, password, role_id, status, department,
-                registration_type, added_by)
+                registration_type, added_by, photo_avatar)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   'MANUALLY_ADDED', %s)
-           RETURNING id, first_name, last_name, email, status""",
+                   'MANUALLY_ADDED', %s, %s)
+           RETURNING id, first_name, last_name, email, status, photo_avatar""",
         [
             clean_str(body["cvsu_id"]),
             clean_str(body["first_name"]),
@@ -161,6 +163,7 @@ async def admin_create(request: Request):
             (body.get("status") or "PENDING").upper(),
             clean_str(body.get("department")),
             auth.user_id,
+            body.get("photo_avatar"),
         ],
     )
     log_action("Created user", email, str(user["id"]), user_id=auth.user_id, ip=auth.ip)
@@ -274,9 +277,9 @@ def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
             """UPDATE users
             SET cvsu_id = %s, first_name = %s, middle_name = %s, last_name = %s,
                 email = %s, password = %s, role_id = %s,
-                status = %s, department = %s
+                status = %s, department = %s, photo_avatar = %s
             WHERE id = %s
-            RETURNING id, cvsu_id, first_name, last_name, email, status""",
+            RETURNING id, cvsu_id, first_name, last_name, email, status, photo_avatar""",
             [
                 clean_str(body.get("cvsu_id",  existing["cvsu_id"])),
                 clean_str(body.get("first_name",  existing["first_name"])),
@@ -285,6 +288,7 @@ def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
                 email, password, role_id,
                 (body.get("status") or existing["status"]).upper(),
                 clean_str(body.get("department",  existing.get("department"))),
+                body.get("photo_avatar", existing.get("photo_avatar")),
                 user_id,
             ],
         )

@@ -91,6 +91,7 @@ CREATE TABLE users (
     daily_goal        VARCHAR(100),
     personal_note     TEXT,
     last_login        TIMESTAMPTZ,
+    photo_avatar      TEXT,
     date_created      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 

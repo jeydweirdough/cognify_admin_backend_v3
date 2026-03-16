@@ -563,7 +563,7 @@ def _me(auth: AuthState):
     user = fetchone(
         """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
-                  r.id AS role_id, r.name AS role_name, r.permissions
+                  u.photo_avatar, r.id AS role_id, r.name AS role_name, r.permissions
            FROM users u JOIN roles r ON u.role_id = r.id
            WHERE u.id = %s""",
         [auth.user_id],
@@ -624,7 +624,7 @@ def _me_mobile(auth: AuthState):
     user = fetchone(
         """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
-                  r.id AS role_id, r.name AS role_name, r.permissions
+                  u.photo_avatar, r.id AS role_id, r.name AS role_name, r.permissions
            FROM users u JOIN roles r ON u.role_id = r.id
            WHERE u.id = %s""",
         [auth.user_id],
