@@ -21,6 +21,7 @@ UPDATABLE_FIELDS = {
     "daily_goal":    ("daily_goal",    lambda v: clean_str(v)),
     "personal_note": ("personal_note", lambda v: v.strip() if v else None),
     "photo_avatar":  ("photo_avatar",  lambda v: clean_str(v)),
+    "avatar_index":  ("avatar_index",  lambda v: int(v) if v is not None else None),
 }
 
 
@@ -40,7 +41,7 @@ async def get_profile(request: Request):
     auth = mobile_permission_required("mobile_view_profile")(request)
     user = fetchone(
         """SELECT id, cvsu_id, first_name, last_name, email,
-                  username, daily_goal, personal_note, photo_avatar,
+                  username, daily_goal, personal_note, photo_avatar, avatar_index,
                   status, date_created, last_login
            FROM users WHERE id = %s""",
         [auth.user_id],
@@ -79,7 +80,7 @@ async def update_profile(request: Request):
             SET {', '.join(set_clauses)}
             WHERE id = %s
             RETURNING id, cvsu_id, first_name, last_name, email,
-                      username, daily_goal, personal_note, photo_avatar,
+                      username, daily_goal, personal_note, photo_avatar, avatar_index,
                       status, date_created, last_login""",
         params,
     )

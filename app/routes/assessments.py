@@ -383,7 +383,13 @@ async def faculty_delete(request: Request, assess_id: str):
 @mobile_assess_router.get("")
 async def mobile_list(request: Request):
     auth = mobile_permission_required("mobile_view_assessments")(request)
-    return ok(_list(request, "AND a.status = 'APPROVED'", include_questions=True))
+    # Exclude PRE_ASSESSMENT and DIAGNOSTIC from regular mobile list
+    # unless specifically requested via ?type=
+    atype = request.query_params.get("type")
+    if atype:
+        return ok(_list(request, "AND a.status = 'APPROVED'", include_questions=True))
+
+    return ok(_list(request, "AND a.status = 'APPROVED' AND a.type NOT IN ('PRE_ASSESSMENT', 'DIAGNOSTIC')", include_questions=True))
 
 
 @mobile_assess_router.get("/{assess_id}")

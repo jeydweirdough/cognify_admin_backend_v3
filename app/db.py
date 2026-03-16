@@ -81,14 +81,19 @@ def execute_returning(sql, params=None):
 def paginate(sql_body, params, page, per_page):
     import re as _re
 
-    count_body = _re.sub(
-        r'\s+ORDER\s+BY\s+.+$',
+    # We need to correctly wrap the counting logic when there are complex aggregations and GROUP BYs.
+    # We should not simply strip ORDER BY if it is inside common expressions or if it's tricky.
+    
+    # Simple regex to strip ORDER BY at the very end of the main query
+    # It must NOT capture nested ORDER BY (e.g., inside jsonb_agg)
+    clean_sql = _re.sub(
+        r'\s+ORDER\s+BY\s+[\w\d._\s,]+$',
         '',
         sql_body.strip(),
         flags=_re.IGNORECASE | _re.DOTALL
     )
 
-    count_sql = f"SELECT COUNT(*) AS total FROM ({count_body}) AS sub"
+    count_sql = f"SELECT COUNT(*) AS total FROM ({clean_sql}) AS sub"
 
     with get_cursor() as cur:
         cur.execute(count_sql, list(params))
