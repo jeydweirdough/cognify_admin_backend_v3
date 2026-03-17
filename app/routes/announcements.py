@@ -178,3 +178,84 @@ async def get_active_announcements(request: Request):
         [auth.role.upper()],
     )
     return ok([_serialize(r) for r in rows])
+
+# ─── Mobile student notifications ────────────────────────────────────────────
+# Students see:
+#   1. Active announcements targeting ALL or STUDENT audience (from admin/faculty)
+#   2. This endpoint is read-only — mobile students cannot create announcements
+
+from app.middleware.auth import mobile_permission_required
+
+mobile_notifications_router = APIRouter(
+    prefix="/api/mobile/student/notifications",
+    tags=["mobile-notifications"],
+)
+
+
+@mobile_notifications_router.get("")
+async def mobile_get_notifications(request: Request):
+    """
+    Return active announcements for the authenticated student.
+    Filters to audience = 'ALL' or 'STUDENT', not expired, active only.
+    Returns newest first, max 50.
+    """
+    auth = mobile_permission_required("mobile_login")(request)
+
+    rows = fetchall(
+        """SELECT id, title, body, type, created_at, expires_at
+           FROM announcements
+           WHERE is_active = TRUE
+             AND (expires_at IS NULL OR expires_at > NOW())
+             AND audience IN ('ALL', 'STUDENT')
+           ORDER BY created_at DESC
+           LIMIT 50""",
+    )
+
+    items = []
+    for r in rows:
+        items.append({
+            "id":         str(r["id"]),
+            "title":      r["title"],
+            "body":       r["body"],
+            "type":       r["type"],           # INFO | WARNING | SUCCESS | TOS_PROGRESS
+            "created_at": r["created_at"].isoformat(),
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
+        })
+
+    return ok({"items": items, "total": len(items)})
+
+
+@mobile_notifications_router.patch("/{notif_id}/read")
+async def mobile_mark_read(request: Request, notif_id: str):
+    """
+    Mark a notification as read for this student.
+    Stored in notification_reads table (per-user read tracking).
+    """
+    auth = mobile_permission_required("mobile_login")(request)
+    # Upsert a read record — ignore if already exists
+    execute(
+        """INSERT INTO notification_reads (user_id, announcement_id)
+           VALUES (%s, %s)
+           ON CONFLICT (user_id, announcement_id) DO NOTHING""",
+        [auth.user_id, notif_id],
+    )
+    return ok({"read": True})
+
+
+@mobile_notifications_router.get("/unread-count")
+async def mobile_unread_count(request: Request):
+    """Return count of unread notifications for badge display."""
+    auth = mobile_permission_required("mobile_login")(request)
+    row = fetchone(
+        """SELECT COUNT(*) AS c
+           FROM announcements a
+           WHERE a.is_active = TRUE
+             AND (a.expires_at IS NULL OR a.expires_at > NOW())
+             AND a.audience IN ('ALL', 'STUDENT')
+             AND NOT EXISTS (
+                 SELECT 1 FROM notification_reads nr
+                 WHERE nr.user_id = %s AND nr.announcement_id = a.id
+             )""",
+        [auth.user_id],
+    )
+    return ok({"unread": int(row["c"] or 0) if row else 0})

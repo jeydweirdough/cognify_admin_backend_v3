@@ -100,6 +100,7 @@ def _register_routers(app: FastAPI):
     from app.routes.announcements import (
         admin_announcements_router,
         public_announcements_router,
+        mobile_notifications_router,
     )
 
     for router in [
@@ -117,5 +118,6 @@ def _register_routers(app: FastAPI):
         roles_router,
         admin_announcements_router,
         public_announcements_router,
+        mobile_notifications_router,
     ]:
         app.include_router(router)

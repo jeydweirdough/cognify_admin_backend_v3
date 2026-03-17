@@ -758,3 +758,22 @@ CREATE OR REPLACE VIEW view_general_readiness AS
 SELECT ROUND(AVG(readiness_percentage), 2) AS overall_system_readiness
 FROM   view_student_individual_readiness
 WHERE  readiness_percentage IS NOT NULL;
+
+-- ============================================================
+-- add_notification_reads.sql
+--
+-- Tracks per-student read status for announcements.
+-- Used by the mobile /notifications endpoint to compute
+-- unread counts and mark individual notifications as read.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS notification_reads (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    announcement_id   UUID NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    read_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, announcement_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_reads_user ON notification_reads(user_id);
+CREATE INDEX IF NOT EXISTS idx_notification_reads_announcement ON notification_reads(announcement_id);

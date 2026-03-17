@@ -952,11 +952,43 @@ async def mobile_progress(request: Request):
     mock_exam_avg = round(float(mock_row["mock_avg"] or 0), 1) \
                    if mock_row and mock_row["mock_avg"] is not None else None
 
+    # ── Extra stats for profile screen ────────────────────────────────────
+    streak = _calc_streak(auth.user_id)
+
+    # Modules read by this student
+    modules_read_row = fetchone(
+        "SELECT COUNT(DISTINCT module_id) AS c FROM module_reads WHERE user_id = %s",
+        [auth.user_id],
+    )
+    modules_read = int(modules_read_row["c"] or 0) if modules_read_row else 0
+
+    # Unique passed assessments (latest attempt >= 75%)
+    passed_row = fetchone(
+        """SELECT COUNT(*) AS c
+           FROM (
+               SELECT DISTINCT ON (assessment_id)
+                      assessment_id, score, total_items
+               FROM   assessment_results
+               WHERE  user_id = %s
+               ORDER  BY assessment_id, date_taken DESC
+           ) latest
+           WHERE (score::numeric / NULLIF(total_items, 0)) >= 0.75""",
+        [auth.user_id],
+    )
+    assessments_passed = int(passed_row["c"] or 0) if passed_row else 0
+
+    # Study hours estimate: assessments * 0.5h + modules read * 0.3h
+    study_hours = round(unique_assessments_taken * 0.5 + modules_read * 0.3, 1)
+
     return ok({
-        "readiness_percentage": readiness_pct,
-        "progress_percentage":  progress_pct,
-        "results":              results,
+        "readiness_percentage":    readiness_pct,
+        "progress_percentage":     progress_pct,
+        "results":                 results,
         "total_assessments_taken": unique_assessments_taken,
-        "subject_scores":       subject_scores,
-        "mock_exam_avg":        mock_exam_avg,
+        "assessments_passed":      assessments_passed,
+        "subject_scores":          subject_scores,
+        "mock_exam_avg":           mock_exam_avg,
+        "streak_days":             streak,
+        "modules_read":            modules_read,
+        "study_hours":             study_hours,
     })
