@@ -1,5 +1,10 @@
 """Application entry point."""
 import os
+import sys
+
+# Ensure Vercel can find local modules
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from app import create_app
 
 app = create_app()

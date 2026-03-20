@@ -353,12 +353,28 @@ async def faculty_update_module(request: Request, subject_id: str, module_id: st
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
-    if not fetchone("SELECT id FROM subjects WHERE id = %s", [subject_id]):
+    subj = fetchone("SELECT id, name FROM subjects WHERE id = %s", [subject_id])
+    if not subj:
         return not_found("Subject not found")
     if require_fields(body, ["title"]): return error("Missing title")
 
     status = "APPROVED" if auto_approve else "PENDING"
-    content_payload = body.get("fileData") if body.get("format") == "PDF" else body.get("content")
+    
+    file_url = body.get("fileUrl")
+    content_payload = body.get("content")
+    
+    if body.get("format") == "PDF" and body.get("fileData"):
+        from app.utils.storage import upload_pdf_base64
+        try:
+            file_url = upload_pdf_base64(body["fileData"], body.get("fileName", "document.pdf"), subj["name"])
+            content_payload = None
+        except Exception as e:
+            import traceback
+            print(f"\\n--- SUPABASE UPLOAD ERROR ---")
+            traceback.print_exc()
+            print(f"-----------------------------\\n")
+            return error(f"Failed to upload PDF: {str(e)}", 500)
+
     module_type = body.get("type", "MODULE")
     if module_type not in ("MODULE", "E-BOOK"):
         module_type = "MODULE"
@@ -367,7 +383,7 @@ def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
         """INSERT INTO modules (subject_id, parent_id, title, description, content, type, format, file_url, file_name, tos_section, sort_order, status, created_by)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
         [subject_id, body.get("parent_id"), clean_str(body["title"]), clean_str(body.get("description")), 
-         content_payload, module_type, body.get("format", "TEXT"), body.get("fileUrl"), body.get("fileName"),
+         content_payload, module_type, body.get("format", "TEXT"), file_url, body.get("fileName"),
          body.get("tos_section"), body.get("sort_order", 0), status, auth.user_id],
     )
     log_action("Added module", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
@@ -377,7 +393,29 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     existing = fetchone("SELECT * FROM modules WHERE id = %s", [module_id])
     if not existing: return not_found("Module not found")
     
-    content_payload = body.get("fileData") if body.get("format") == "PDF" else body.get("content", existing.get("content"))
+    subj = fetchone("SELECT name FROM subjects WHERE id = %s", [existing["subject_id"]])
+    if not subj: return not_found("Subject not found")
+    
+    file_url = body.get("fileUrl", existing.get("file_url"))
+    content_payload = body.get("content", existing.get("content"))
+    
+    if body.get("format") == "PDF" and body.get("fileData"):
+        from app.utils.storage import upload_pdf_base64
+        try:
+            file_url = upload_pdf_base64(
+                body["fileData"], 
+                body.get("fileName") or existing.get("file_name") or "document.pdf",
+                subj["name"]
+            )
+            content_payload = None
+        except Exception as e:
+            import traceback
+            print(f"\\n--- SUPABASE UPLOAD ERROR ---")
+            traceback.print_exc()
+            print(f"-----------------------------\\n")
+            return error(f"Failed to upload PDF: {str(e)}", 500)
+    elif body.get("format") == "PDF":
+        content_payload = existing.get("content")
 
     if not auto_approve:
         # FACULTY MODE: Intercept the update and push to staging table (request_changes)
@@ -387,7 +425,7 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
             "description": clean_str(body.get("description", existing.get("description"))),
             "content": content_payload,
             "format": body.get("format", existing.get("format", "TEXT")),
-            "file_url": body.get("fileUrl", existing.get("file_url")),
+            "file_url": file_url,
             "file_name": body.get("fileName", existing.get("file_name")),
             "tos_section": body.get("tos_section", existing.get("tos_section")),
             "sort_order": body.get("sort_order", existing["sort_order"])
@@ -428,7 +466,7 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
            WHERE id = %s RETURNING *""",
         [clean_str(body.get("title", existing["title"])), clean_str(body.get("description", existing.get("description"))),
          content_payload, body.get("type", existing.get("type", "MODULE")),
-         body.get("format", existing.get("format", "TEXT")), body.get("fileUrl", existing.get("file_url")),
+         body.get("format", existing.get("format", "TEXT")), file_url,
          body.get("fileName", existing.get("file_name")), body.get("tos_section", existing.get("tos_section")), 
          body.get("sort_order", existing["sort_order"]), module_id],
     )
