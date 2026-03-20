@@ -97,6 +97,13 @@ async def faculty_dashboard(request: Request):
 # ANALYTICS HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_active_tos_subjects() -> list[str]:
+    """Fetch the list of subject names from the currently ACTIVE TOS version."""
+    row = fetchone("SELECT data FROM tos_versions WHERE status = 'ACTIVE' LIMIT 1")
+    if not row or not row.get("data") or "subjects" not in row["data"]:
+        return []
+    return [s["subject"] for s in row["data"]["subjects"] if "subject" in s]
+
 def _get_pass_probability(avg_score: float) -> dict:
     """Compute pass probability key and label from average score.
     Thresholds: >=75 HIGH_CHANCE, >=60 LIKELY, >=25 NEEDS_IMPROVEMENT, >=1 AT_RISK, 0 NO_PROGRESS."""
@@ -121,15 +128,27 @@ def _get_board_readiness(avg_score: float) -> str:
 
 def _cohort_analytics_data() -> dict:
     """Helper to fetch and calculate system-wide cohort analytics."""
-    subj_data = fetchall("""
+    active_subjects = _get_active_tos_subjects()
+    
+    if not active_subjects:
+        # If no TOS is active, return empty stats
+        return {
+            "subjectCompetency": [],
+            "probabilityDistribution": [],
+            "totalStudents": 0,
+            "stats": None
+        }
+
+    placeholders = ",".join(["%s"] * len(active_subjects))
+    subj_data = fetchall(f"""
         SELECT s.name AS subject, AVG((ar.score::numeric / NULLIF(ar.total_items, 0)) * 100) as cohort_score
         FROM subjects s
         LEFT JOIN assessments a ON a.subject_id = s.id
         LEFT JOIN assessment_results ar ON ar.assessment_id = a.id
-        WHERE s.status = 'APPROVED'
+        WHERE s.status = 'APPROVED' AND s.name IN ({placeholders})
         GROUP BY s.name
         ORDER BY s.name
-    """)
+    """, active_subjects)
     competency = [{"subject": r["subject"], "fullSubject": r["subject"], "cohortScore": round(float(r["cohort_score"] or 0)), "passingStandard": 75} for r in subj_data]
 
     students = fetchall("SELECT readiness_percentage FROM view_student_individual_readiness")
@@ -198,7 +217,15 @@ def _calc_readiness(user_id: str) -> dict:
     average blends into the final score — pulling readiness down when mock
     performance trails quiz performance (prevents quiz inflation).
     """
-    all_subjects   = fetchall("SELECT name FROM subjects WHERE status = 'APPROVED' ORDER BY name")
+    active_subjects = _get_active_tos_subjects()
+    if not active_subjects:
+        return {
+            "percentage": 0.0, "raw_readiness": 0.0, "mock_avg": None,
+            "progress": 0.0, "level": "LOW", "subject_scores": [], "total_subjects": 0
+        }
+
+    placeholders   = ",".join(["%s"] * len(active_subjects))
+    all_subjects   = fetchall(f"SELECT name FROM subjects WHERE status = 'APPROVED' AND name IN ({placeholders}) ORDER BY name", active_subjects)
     total_subjects = len(all_subjects)
 
     # Step 1: AVG score per (assessment_id deduped latest) grouped by type+subject
@@ -514,7 +541,13 @@ def _analytics_list(request: Request):
     result = paginate(" ".join(sql), params, page, per_page)
 
     # Fetch total approved subjects once — same denominator used in _calc_readiness()
-    total_subjects_row = fetchone("SELECT COUNT(*) AS c FROM subjects WHERE status = 'APPROVED'")
+    active_subjects = _get_active_tos_subjects()
+    if active_subjects:
+        placeholders = ",".join(["%s"] * len(active_subjects))
+        total_subjects_row = fetchone(f"SELECT COUNT(*) AS c FROM subjects WHERE status = 'APPROVED' AND name IN ({placeholders})", active_subjects)
+    else:
+        total_subjects_row = None
+        
     total_subjects = int(total_subjects_row["c"] or 0) if total_subjects_row else 0
 
     for r in result["items"]:
