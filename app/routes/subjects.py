@@ -19,6 +19,13 @@ mobile_subjects_router  = APIRouter(prefix="/api/mobile/student/subjects",    ta
 # CORE HELPERS & CONDITIONAL ACCESS LOGIC
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_active_tos_subjects() -> list[str]:
+    """Fetch the list of subject names from the currently ACTIVE TOS version."""
+    row = fetchone("SELECT data FROM tos_versions WHERE status = 'ACTIVE' LIMIT 1")
+    if not row or not row.get("data") or "subjects" not in row["data"]:
+        return []
+    return [s["subject"] for s in row["data"]["subjects"] if "subject" in s]
+
 def _format_module(m: dict) -> dict:
     m["id"] = str(m["id"])
     m["subject_id"] = str(m["subject_id"])
@@ -85,6 +92,8 @@ def _get_subject_tree(subject_id: str, role: str = "ADMIN", user_id: str = None)
 def _list_subjects(request: Request, role: str):
     page, per_page = get_page_params(request)
     search = get_search(request)
+    active_tos_only = request.query_params.get("active_tos_only", "false").lower() == "true"
+    
     sql    = ["SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name FROM subjects s LEFT JOIN users u ON u.id = s.created_by WHERE 1=1"]
     params = []
     
@@ -95,6 +104,16 @@ def _list_subjects(request: Request, role: str):
     if search:
         sql.append("AND (LOWER(s.name) LIKE LOWER(%s) OR LOWER(s.description) LIKE LOWER(%s))")
         params += [search, search]
+
+    if active_tos_only:
+        active_subjects = _get_active_tos_subjects()
+        if active_subjects:
+            placeholders = ",".join(["%s"] * len(active_subjects))
+            sql.append(f"AND s.name IN ({placeholders})")
+            params += active_subjects
+        else:
+            # If no active TOS, return nothing
+            sql.append("AND 1=0")
         
     sql.append("ORDER BY s.name")
     result = paginate(" ".join(sql), params, page, per_page)
