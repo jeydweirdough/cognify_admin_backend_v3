@@ -377,7 +377,7 @@ def _student_full_record(identifier: str) -> dict | None:
     # 2. Query the appropriate column
     if is_valid_uuid:
         student = fetchone(
-            """SELECT u.id, u.first_name, u.last_name, u.email,
+            """SELECT u.id, u.first_name, u.last_name, u.email, u.photo_avatar,
                       u.cvsu_id AS student_number, u.department, u.date_created AS enrollment_date
                FROM users u JOIN roles r ON u.role_id = r.id
                WHERE u.id = %s AND r.name = 'STUDENT'""",
@@ -385,7 +385,7 @@ def _student_full_record(identifier: str) -> dict | None:
         )
     else:
         student = fetchone(
-            """SELECT u.id, u.first_name, u.last_name, u.email,
+            """SELECT u.id, u.first_name, u.last_name, u.email, u.photo_avatar,
                       u.cvsu_id AS student_number, u.department, u.date_created AS enrollment_date
                FROM users u JOIN roles r ON u.role_id = r.id
                WHERE u.cvsu_id = %s AND r.name = 'STUDENT'""",
@@ -527,7 +527,7 @@ def _analytics_list(request: Request):
     sql = ["""
         SELECT v.user_id AS id, v.first_name || ' ' || v.last_name AS name,
                u.cvsu_id AS student_number, u.department AS section,
-               v.readiness_percentage AS average
+               u.photo_avatar, v.readiness_percentage AS average
         FROM view_student_individual_readiness v
         JOIN users u ON u.id = v.user_id
         WHERE 1=1
