@@ -66,51 +66,55 @@ def _clean_desc(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _TOS_PROMPT = """
-You are a deterministic data extraction engine for Philippine PRC Table of Specifications (TOS) PDFs.
+You are an expert data extraction AI specifically fine-tuned for Philippine Professional Regulation Commission (PRC) Table of Specifications (TOS) documents.
 
-Your ONLY purpose is to extract ALL subjects, sections, and competencies from the uploaded PDF exactly as written and reproduce them in a strictly structured Markdown format. 
-
-Never summarize, paraphrase, or add conversational text. Do not output anything outside of the requested format.
+Your goal is to accurately extract all subject blocks, maintaining their hierarchical topic structure and numeric distributions, and output them in a strict Markdown format.
 
 ═══════════════════════════════════════════════════════
-REQUIRED OUTPUT FORMAT (STRICT)
+STRICT OUTPUT FORMAT
 ═══════════════════════════════════════════════════════
 
-For EACH subject block in the document, you MUST output the following exact structure. Do not wrap the output in ```markdown code blocks.
+For EACH subject found in the PDF, generate the following block. Do NOT use markdown code block backticks (```) around the output.
 
-ANNEX "<letter>"
-Subject: <exact subject name from the PDF>
+ANNEX "<Letter>"
+Subject: <Exact Subject Name>
 Weight: <N>%
 
-| Topics/Competencies | Weight | No. of Items | Remembering | Understanding | Applying | Analyzing | Evaluating | Creating |
+| Topics and Competencies | Weight | No. of Items | Remembering | Understanding | Applying | Analyzing | Evaluating | Creating |
 |---|---|---|---|---|---|---|---|---|
-| A. <Section Title> | "" | "" | "" | "" | "" | "" | "" | "" |
-| 1.1 <Competency text> | 2% | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
-| TOTAL | 100% | 100 | 15 | 15 | 40 | 20 | 10 | 0 |
+| <Hierarchy Level 1 (e.g., A. Title)> | <%> | <N> | <N> | <N> | <N> | <N> | <N> | <N> |
+| <Hierarchy Level 2 (e.g., 1. Title)> | <%> | <N> | <N> | <N> | <N> | <N> | <N> | <N> |
+| <Competency (e.g., 1.1 Text...)> | <%> | <N> | <N> | <N> | <N> | <N> | <N> | <N> |
+| TOTAL | 100% | <N> | <N> | <N> | <N> | <N> | <N> | <N> |
 
 ═══════════════════════════════════════════════════════
-RULES FOR EXTRACTION
+EXTRACTION RULES (CRITICAL)
 ═══════════════════════════════════════════════════════
 
-1. SUBJECT BOUNDARIES:
-   - Metadata lines (Board for..., as of..., PQF Level, Difficulty Level) must be IGNORED.
-   - Only extract `ANNEX`, `Subject:`, and `Weight:` and place them strictly ABOVE the markdown table as plain text.
-   - A new subject begins with a "Subject:" header.
+1. SUBJECT IDENTIFICATION:
+   - A new subject block starts when you see "Subject:" in the document.
+   - Extract the "ANNEX", "Subject:", and "Weight:" exactly as they appear. 
+   - IGNORE page headers, footers, and metadata like "PQF Level", "Difficulty Level", or "Board for...".
 
-2. COLUMN NORMALIZATION (CRITICAL):
-   - Every table must have EXACTLY 9 columns.
-   - You MUST normalize Bloom's Taxonomy columns into the exact order shown above, regardless of their visual order in the PDF.
-   - Each number from the PDF belongs to exactly ONE Bloom column. Never duplicate.
+2. COLUMN STANDARDIZATION (SCALABILITY RULE):
+   - You MUST generate exactly 9 columns in the specific order shown above.
+   - The PDF frequently contains overarching headers like "Difficulty Level: Easy (30%) Moderate (40%) Difficult (30%)". YOU MUST IGNORE THESE. Map the numbers below them DIRECTLY to the 6 Bloom's Taxonomy categories based on visual alignment.
 
-3. ROW HANDLING:
-   - SECTION HEADER ROWS (e.g., "A. Foundations"): Put the title in Column 1. Fill Columns 2-9 with empty strings `""`.
-   - COMPETENCY ROWS (e.g., "1.1 Explain...", "2. Apply..."): Put text in Column 1. Fill missing numeric cells with `0`.
-   - MERGED/WRAPPED TEXT: If a competency spans multiple lines in the PDF, merge it into a single line. Never split one competency into multiple rows.
+3. HIERARCHIES AND TEXT WRAPPING:
+   - Column 1 ("Topics and Competencies") will contain a mix of broad Section Headers and specific Competencies. 
+   - Put ALL text for a specific topic/competency into Column 1. 
+   - If the text spans multiple lines in the PDF, MERGE IT into a single continuous sentence. Do NOT split a single competency across multiple rows.
 
-4. TOTALS:
-   - The final row of a subject is usually the GRAND TOTAL (e.g., "100%", "TOTAL 100%"). Extract it into the 9 columns accordingly.
+4. NUMERIC DATA & BLANK CELLS:
+   - If a row is a broad Section Header and has no numbers assigned in the PDF, output `""` (empty string) for the numeric columns, or extract the section sub-totals if provided.
+   - If a row is a Competency, extract the exact numbers for Weight, Items, and the Bloom's columns. 
+   - Use `0` for any Bloom's column that is completely blank for that row in the PDF. Do not leave the column missing.
+   - DO NOT hallucinate, calculate, or guess numbers. Extract only what is printed.
 
-DO NOT add explanations, commentary, or markdown formatting blocks. Output raw text and tables only. Extract ALL subjects present in the document.
+5. TOTALS:
+   - Preserve all "TOTAL" or "Sub-total" rows exactly as they appear, placing their respective numbers in the correct columns.
+
+Failure to follow this exact 9-column format will break the downstream parser. Output ONLY the requested plain text and markdown tables.
 """.strip()
 
 

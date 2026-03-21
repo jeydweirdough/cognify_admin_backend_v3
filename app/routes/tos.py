@@ -332,6 +332,97 @@ async def activate_tos_version(tos_id: str, request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ADMIN — GET ASSOCIATED SUBJECTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@admin_tos_router.get("/{tos_id}/associated-subjects")
+async def get_tos_associated_subjects(tos_id: str, request: Request):
+    auth = permission_required("view_tos")(request)
+
+    tos = fetchone("SELECT data FROM tos_versions WHERE id = %s", [tos_id])
+    if not tos: return not_found("TOS version not found")
+
+    names = [s.get("subject", "").strip() for s in tos.get("data", {}).get("subjects", []) if s.get("subject")]
+    
+    if not names:
+        return ok([])
+
+    placeholders = ",".join(["%s"] * len(names))
+    subjects = fetchall(f"""
+        SELECT 
+            s.id, s.name, s.status,
+            (SELECT COUNT(*) FROM modules WHERE subject_id = s.id) as module_count,
+            (SELECT COUNT(*) FROM assessments WHERE subject_id = s.id) as assessment_count
+        FROM subjects s
+        WHERE LOWER(s.name) IN ({",".join(["LOWER(%s)"] * len(names))})
+    """, names)
+
+    for s in subjects:
+        s["id"] = str(s["id"])
+
+    return ok(subjects)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN — GET SUBJECT STATUS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@admin_tos_router.get("/{tos_id}/subject-status")
+async def get_tos_subject_status(tos_id: str, request: Request):
+    auth = permission_required("view_tos")(request)
+
+    tos = fetchone("SELECT data FROM tos_versions WHERE id = %s", [tos_id])
+    if not tos: return not_found("TOS version not found")
+
+    names = [s.get("subject", "").strip() for s in tos.get("data", {}).get("subjects", []) if s.get("subject")]
+    
+    status_map = {n: "MISSING" for n in names}
+    
+    if names:
+        subjects = fetchall(f"SELECT name FROM subjects WHERE LOWER(name) IN ({','.join(['LOWER(%s)'] * len(names))})", names)
+        existing = {s["name"].lower() for s in subjects}
+        for n in names:
+            if n.lower() in existing:
+                status_map[n] = "EXISTS"
+                
+    return ok(status_map)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN — DELETE WITH OPTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@admin_tos_router.post("/{tos_id}/delete-with-options")
+async def delete_tos_with_options(tos_id: str, request: Request):
+    auth = permission_required("delete_tos")(request)
+
+    existing = fetchone("SELECT * FROM tos_versions WHERE id = %s", [tos_id])
+    if not existing:
+        return not_found("TOS version not found")
+
+    if existing["status"] == "ACTIVE":
+        return error("Cannot delete the currently ACTIVE TOS version. Archive or activate another version first.", 409)
+        
+    try: body = await request.json()
+    except Exception: body = {}
+    
+    retain_subject_ids = body.get("retain_subject_ids", [])
+    
+    names = [s.get("subject", "").strip() for s in existing.get("data", {}).get("subjects", []) if s.get("subject")]
+    
+    if names:
+        db_subjects = fetchall(f"SELECT id, name FROM subjects WHERE LOWER(name) IN ({','.join(['LOWER(%s)'] * len(names))})", names)
+        for s in db_subjects:
+            s_id_str = str(s["id"])
+            if s_id_str not in retain_subject_ids:
+                execute("DELETE FROM subjects WHERE id = %s", [s_id_str])
+                log_action("Deleted subject during TOS removal", s["name"], s_id_str, user_id=auth.user_id, ip=auth.ip)
+
+    execute("DELETE FROM tos_versions WHERE id = %s", [tos_id])
+    log_action("Deleted TOS version (with options)", existing["label"], tos_id, user_id=auth.user_id, ip=auth.ip)
+    
+    return no_content()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ADMIN — DELETE
 # ─────────────────────────────────────────────────────────────────────────────
 
