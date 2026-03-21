@@ -1,4 +1,4 @@
-fastapi
+xfastapi
 uvicorn
 psycopg2-binary
 pydantic
