@@ -23,7 +23,8 @@ from app.utils.log import log_action
 admin_whitelist_router   = APIRouter(prefix="/api/web/admin/whitelist",   tags=["admin-whitelist"])
 faculty_whitelist_router = APIRouter(prefix="/api/web/faculty/whitelist", tags=["faculty-whitelist"])
 
-VALID_ROLES = {"ADMIN", "FACULTY", "STUDENT"}
+VALID_ROLES    = {"ADMIN", "FACULTY", "STUDENT"}
+VALID_STATUSES = {"PENDING", "REGISTERED"}
 
 
 def _fmt_wl(e: dict) -> dict:
@@ -33,6 +34,7 @@ def _fmt_wl(e: dict) -> dict:
     e["studentNumber"] = e.get("institutional_id")
     e["dateAdded"]     = e["date_added"].isoformat() if e.get("date_added") else None
     if e.get("added_by"): e["added_by"] = str(e["added_by"])
+    e["yearLevel"]     = e.get("year_level") # Provide camelCase for frontend consistency
     return e
 
 
@@ -46,6 +48,7 @@ def _list_whitelist(request: Request, role_lock: str = None):
     page, per_page = get_page_params(request)
     search = get_search(request)
     role   = role_lock or get_filter(request, "role", VALID_ROLES)
+    status = get_filter(request, "status", VALID_STATUSES)
 
     sql    = ["""
         SELECT w.*, u.first_name || ' ' || u.last_name AS added_by_name
@@ -67,6 +70,10 @@ def _list_whitelist(request: Request, role_lock: str = None):
     if role:
         sql.append("AND w.role = %s")
         params.append(role)
+
+    if status:
+        sql.append("AND w.status = %s")
+        params.append(status)
 
     sql.append("ORDER BY w.date_added DESC")
     return paginate(" ".join(sql), params, page, per_page)
@@ -101,8 +108,8 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
 
     entry = execute_returning(
         """INSERT INTO whitelist
-               (first_name, middle_name, last_name, institutional_id, email, role, status, added_by)
-           VALUES (%s, %s, %s, %s, %s, %s, 'PENDING', %s)
+               (first_name, middle_name, last_name, institutional_id, email, role, status, added_by, year_level)
+           VALUES (%s, %s, %s, %s, %s, %s, 'PENDING', %s, %s)
            RETURNING *""",
         [
             clean_str(body["first_name"]),
@@ -112,6 +119,8 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
             email,
             role,
             added_by,
+            # Accept various key formats (snake_case, camelCase, or Space Separated)
+            body.get("year_level") or body.get("yearLevel") or body.get("Year Level") or body.get("year level"),
         ],
     )
     log_action("Whitelist entry added", email, str(entry["id"]), user_id=added_by, ip=ip)
@@ -140,7 +149,8 @@ def _update_entry(entry_id: str, body: dict, auth, role_lock: str = None):
     updated = execute_returning(
         """UPDATE whitelist
            SET first_name = %s, middle_name = %s, last_name = %s,
-               institutional_id = %s, email = LOWER(%s), role = %s
+               institutional_id = %s, email = LOWER(%s), role = %s,
+               year_level = %s
            WHERE id = %s AND status = 'PENDING'
            RETURNING *""",
         [
@@ -148,7 +158,9 @@ def _update_entry(entry_id: str, body: dict, auth, role_lock: str = None):
             clean_str(body.get("middle_name",      existing.get("middle_name"))),
             clean_str(body.get("last_name",        existing["last_name"])),
             clean_str(body.get("institutional_id", existing["institutional_id"])),
-            new_email, new_role, entry_id,
+            new_email, new_role, 
+            body.get("year_level") or body.get("yearLevel") or body.get("Year Level") or body.get("year level") or existing.get("year_level"),
+            entry_id,
         ],
     )
     if not updated:

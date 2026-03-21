@@ -3,11 +3,13 @@ Mobile student profile routes.
   PATCH /api/mobile/student/profile  — update own profile fields
   GET   /api/mobile/student/profile  — fetch own profile
 """
+import os
 from fastapi import APIRouter, Request
 from app.db import fetchone, execute_returning
 from app.middleware.auth import mobile_permission_required
 from app.utils.responses import ok, error, not_found
 from app.utils.validators import clean_str
+from app.utils.storage import upload_image_base64
 
 mobile_profile_router = APIRouter(
     prefix="/api/mobile/student/profile",
@@ -23,6 +25,12 @@ UPDATABLE_FIELDS = {
     "photo_avatar":  ("photo_avatar",  lambda v: clean_str(v)),
     "avatar_index":  ("avatar_index",  lambda v: int(v) if v is not None else None),
 }
+
+def get_preset_url(index: int) -> str | None:
+    if index < 0 or index > 7:
+        return None
+    supabase_url = os.getenv("SUPABASE_URL", "https://cxsymbqsleaiemekojhp.supabase.co").rstrip("/")
+    return f"{supabase_url}/storage/v1/object/public/profiles/system/presets/preset_{index}.png"
 
 
 def _fmt_profile(u: dict) -> dict:
@@ -56,11 +64,34 @@ async def update_profile(request: Request):
     auth = mobile_permission_required("mobile_edit_profile")(request)
     try:
         body = await request.json()
-    except Exception:
+    except Exception as e:
+        print(f"[PROFILE] JSON parse error: {e}")
         return error("Invalid JSON body")
 
     if not isinstance(body, dict) or not body:
+        print(f"[PROFILE] Empty body: {body}")
         return error("Nothing to update")
+
+    # Debug: log what fields are being received
+    photo_val = body.get("photo_avatar")
+
+    # Pre-process fields to handle logic between them
+    # If a preset avatar is chosen, it overrides the photo_avatar with the preset URL
+    if "avatar_index" in body:
+        idx = body["avatar_index"]
+        if idx is not None:
+            try:
+                idx = int(idx)
+                if idx >= 0:
+                    preset_url = get_preset_url(idx)
+                    if preset_url:
+                        body["photo_avatar"] = preset_url
+                elif idx == -1:
+                    # If explicitly setting to -1 but no photo_avatar is provided, 
+                    # we keep whatever photo_avatar was sent or existing.
+                    pass
+            except (ValueError, TypeError):
+                return error("Invalid avatar_index")
 
     set_clauses = []
     params = []
@@ -68,6 +99,14 @@ async def update_profile(request: Request):
     for field, (col, transform) in UPDATABLE_FIELDS.items():
         if field in body:
             value = body[field]
+            
+            # Special handling for Base64 profile photo upload
+            if field == "photo_avatar" and isinstance(value, str) and value.startswith("data:image"):
+                try:
+                    value = upload_image_base64(value, "avatar.jpg", auth.user_id)
+                except Exception as e:
+                    return error(f"Failed to upload profile photo: {str(e)}")
+            
             set_clauses.append(f"{col} = %s")
             params.append(transform(value) if value is not None else None)
 
@@ -75,15 +114,17 @@ async def update_profile(request: Request):
         return error("No valid fields to update")
 
     params.append(auth.user_id)
-    updated = execute_returning(
-        f"""UPDATE users
+    sql = f"""UPDATE users
             SET {', '.join(set_clauses)}
             WHERE id = %s
             RETURNING id, cvsu_id, first_name, last_name, email,
                       username, daily_goal, personal_note, photo_avatar, avatar_index,
-                      status, date_created, last_login""",
-        params,
-    )
-    if not updated:
-        return not_found("User not found")
-    return ok(_fmt_profile(updated))
+                      status, date_created, last_login"""
+    try:
+        updated = execute_returning(sql, params)
+        if not updated:
+            return not_found("User not found")
+        return ok(_fmt_profile(updated))
+    except Exception as e:
+        print(f"[PROFILE] Database update error: {e}")
+        return error("Failed to update profile in database")

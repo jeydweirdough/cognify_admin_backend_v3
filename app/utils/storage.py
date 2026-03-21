@@ -82,3 +82,56 @@ def upload_pdf_base64(base64_str: str, filename: str, subject_name: str) -> Opti
 
     # Return the authenticated public URL
     return f"{supabase_url.rstrip('/')}/storage/v1/object/public/{bucket}/{unique_filename}"
+
+def upload_image_base64(base64_str: str, filename: str, user_id: str) -> Optional[str]:
+    """
+    Decodes a Base64 image and uploads it to a 'profiles' Supabase Storage bucket.
+    Returns the public URL of the uploaded image.
+    """
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_KEY"))
+    
+    if not supabase_url or not supabase_key:
+        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for file uploads.")
+
+    bucket = "profiles"
+
+    # Detect content type and remove header
+    content_type = "image/jpeg"
+    if base64_str.startswith("data:"):
+        header, base64_str = base64_str.split(",", 1)
+        match = re.search(r'data:(.*?);', header)
+        if match:
+            content_type = match.group(1)
+
+    try:
+        file_bytes = base64.b64decode(base64_str)
+    except Exception as e:
+        raise ValueError(f"Invalid Base64 string: {e}")
+
+    ext = os.path.splitext(filename)[1]
+    if not ext:
+        # Infer extension from content type
+        ext = "." + content_type.split("/")[-1] if "/" in content_type else ".jpg"
+    
+    unique_filename = f"{user_id}/{uuid.uuid4().hex}{ext}"
+
+    url = f"{supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{unique_filename}"
+    
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": content_type
+    }
+
+    with httpx.Client(timeout=30) as client:
+        # 1. Auto-create the bucket if it doesn't exist
+        _ensure_bucket_exists(client, supabase_url, supabase_key, bucket)
+        
+        # 2. Upload the file
+        resp = client.post(url, headers=headers, content=file_bytes)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Storage error ({resp.status_code}): {resp.text}")
+
+    # Return the public URL
+    return f"{supabase_url.rstrip('/')}/storage/v1/object/public/{bucket}/{unique_filename}"

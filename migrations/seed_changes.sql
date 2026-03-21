@@ -70,7 +70,8 @@ ON CONFLICT (id) DO UPDATE SET permissions = EXCLUDED.permissions;
 INSERT INTO users (
     id, cvsu_id, first_name, middle_name, last_name,
     email, password, role_id, status, department, date_created,
-    registration_type, added_by, approved_by, approved_at
+    registration_type, added_by, approved_by, approved_at,
+    photo_avatar, avatar_index
 ) VALUES
 (
   '10000000-0000-0000-0000-000000000001',
@@ -105,7 +106,8 @@ INSERT INTO users (
   '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
   '00000000-0000-0000-0000-000000000003','ACTIVE','BS Psychology',
   NOW()-INTERVAL '90 days','SELF_REGISTERED',NULL,
-  '10000000-0000-0000-0000-000000000001',NOW()-INTERVAL '88 days'
+  '10000000-0000-0000-0000-000000000001',NOW()-INTERVAL '88 days',
+  'https://cxsymbqsleaiemekojhp.supabase.co/storage/v1/object/public/profiles/system/presets/preset_0.png', 0
 ),
 (
   '10000000-0000-0000-0000-000000000012',
@@ -113,7 +115,8 @@ INSERT INTO users (
   '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
   '00000000-0000-0000-0000-000000000003','ACTIVE','BS Psychology',
   NOW()-INTERVAL '85 days','SELF_REGISTERED',NULL,
-  '10000000-0000-0000-0000-000000000001',NOW()-INTERVAL '83 days'
+  '10000000-0000-0000-0000-000000000001',NOW()-INTERVAL '83 days',
+  'https://cxsymbqsleaiemekojhp.supabase.co/storage/v1/object/public/profiles/system/presets/preset_1.png', 1
 ),
 -- Pre-created; no password yet (hasn't signed up)
 (
@@ -122,7 +125,8 @@ INSERT INTO users (
   NULL,
   '00000000-0000-0000-0000-000000000003','ACTIVE','BS Psychology',
   NOW()-INTERVAL '5 days','MANUALLY_ADDED',
-  '10000000-0000-0000-0000-000000000001',NULL,NULL
+  '10000000-0000-0000-0000-000000000001',NULL,NULL,
+  'https://cxsymbqsleaiemekojhp.supabase.co/storage/v1/object/public/profiles/system/presets/preset_4.png', 4
 ),
 -- Self-registered (has password) but awaiting approval → PENDING
 (
@@ -130,7 +134,8 @@ INSERT INTO users (
   '2024-PSY-006','Sofia','Marie','Dela Cruz','student6@cvsu.edu.ph',
   '$2b$12$YmN9Z4K1pT7vL2o3Qw8e5u9R6Y0xH3fA1bD2cE5jG8kL0nM7pQ4rS6',
   '00000000-0000-0000-0000-000000000003','ACTIVE','BS Psychology',
-  NOW()-INTERVAL '2 days','SELF_REGISTERED',NULL,NULL,NULL
+  NOW()-INTERVAL '2 days', 'SELF_REGISTERED',NULL,NULL,NULL,
+  'https://cxsymbqsleaiemekojhp.supabase.co/storage/v1/object/public/profiles/system/presets/preset_5.png', 5
 )
 ON CONFLICT (id) DO NOTHING;
 
