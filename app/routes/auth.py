@@ -28,8 +28,8 @@ def _fetch_user_by_email(email: str):
     return fetchone(
         """
         SELECT u.id, u.email, u.password, u.status,
-               u.first_name, u.last_name, u.cvsu_id,
-               u.photo_avatar, u.avatar_index,
+               u.first_name, u.middle_name, u.last_name, u.cvsu_id,
+               u.photo_avatar,
                r.name AS role
         FROM users u
         JOIN roles r ON u.role_id = r.id
@@ -105,6 +105,7 @@ def _build_login_response(user):
         "id":           str(user["id"]),
         "email":        user["email"],
         "first_name":   user["first_name"],
+        "middle_name":  user.get("middle_name"),
         "last_name":    user["last_name"],
         "role":         user["role"],
         "cvsu_id":      user.get("cvsu_id"),
@@ -204,7 +205,6 @@ def _register(body: dict, expected_role: str):
                 "status":        "ACTIVE",
                 "permissions":   perms,
                 "photo_avatar":  None,
-                "avatar_index":  -1,
                 "token":         access_token,
                 "refresh_token": refresh_token,
             },
@@ -334,7 +334,6 @@ async def mobile_login(request: Request):
         "cvsu_id":     user.get("cvsu_id"),
         "permissions": perms,
         "photo_avatar": user.get("photo_avatar"),
-        "avatar_index": user.get("avatar_index", -1),
     }
     # No Set-Cookie headers — mobile stores tokens in AsyncStorage only.
     log_action("Mobile login", user["email"], str(user["id"]), user_id=str(user["id"]))
@@ -634,7 +633,7 @@ def _me_mobile(auth: AuthState):
     user = fetchone(
         """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
-                  u.photo_avatar, u.avatar_index, r.id AS role_id, r.name AS role_name, r.permissions
+                  u.photo_avatar, r.id AS role_id, r.name AS role_name, r.permissions
            FROM users u JOIN roles r ON u.role_id = r.id
            WHERE u.id = %s""",
         [auth.user_id],

@@ -23,14 +23,14 @@ UPDATABLE_FIELDS = {
     "daily_goal":    ("daily_goal",    lambda v: clean_str(v)),
     "personal_note": ("personal_note", lambda v: v.strip() if v else None),
     "photo_avatar":  ("photo_avatar",  lambda v: clean_str(v)),
-    "avatar_index":  ("avatar_index",  lambda v: int(v) if v is not None else None),
 }
 
 def get_preset_url(index: int) -> str | None:
     if index < 0 or index > 7:
         return None
-    supabase_url = os.getenv("SUPABASE_URL", "https://cxsymbqsleaiemekojhp.supabase.co").rstrip("/")
-    return f"{supabase_url}/storage/v1/object/public/profiles/system/presets/preset_{index}.png"
+    letters = ["a", "b", "c", "d", "e", "f", "g", "h"]
+    supabase_url = os.getenv("SUPABASE_URL", "https://gtmescrpcsowaikmvgvy.supabase.co").rstrip("/")
+    return f"{supabase_url}/storage/v1/object/public/avatars/{letters[index]}.png"
 
 
 def _fmt_profile(u: dict) -> dict:
@@ -49,7 +49,7 @@ async def get_profile(request: Request):
     auth = mobile_permission_required("mobile_view_profile")(request)
     user = fetchone(
         """SELECT id, cvsu_id, first_name, last_name, email,
-                  username, daily_goal, personal_note, photo_avatar, avatar_index,
+                  username, daily_goal, personal_note, photo_avatar,
                   status, date_created, last_login
            FROM users WHERE id = %s""",
         [auth.user_id],
@@ -118,7 +118,7 @@ async def update_profile(request: Request):
             SET {', '.join(set_clauses)}
             WHERE id = %s
             RETURNING id, cvsu_id, first_name, last_name, email,
-                      username, daily_goal, personal_note, photo_avatar, avatar_index,
+                      username, daily_goal, personal_note, photo_avatar,
                       status, date_created, last_login"""
     try:
         updated = execute_returning(sql, params)
