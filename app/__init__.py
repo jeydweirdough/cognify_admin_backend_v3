@@ -102,6 +102,7 @@ def _register_routers(app: FastAPI):
         public_announcements_router,
         mobile_notifications_router,
     )
+    from app.routes.sessions import mobile_sessions_router
 
     for router in [
         web_auth_router, mobile_auth_router,
@@ -119,5 +120,6 @@ def _register_routers(app: FastAPI):
         admin_announcements_router,
         public_announcements_router,
         mobile_notifications_router,
+        mobile_sessions_router,
     ]:
         app.include_router(router)
