@@ -74,18 +74,19 @@ def _clean_desc(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _TOS_PROMPT = """
-You are an expert data extraction AI for Philippine PRC (Professional Regulation Commission) Table of Specifications (TOS) documents. These are board exam blueprints listing topics, competency codes, item counts, and Bloom's Taxonomy distributions.
+You are an expert data extraction AI for Philippine PRC (Professional Regulation Commission) Table of Specifications (TOS) documents. These are board exam blueprints listing topics, competency codes, item counts, and Bloom's Taxonomy distributions across multiple subjects — sometimes spanning many pages.
 
-Your output feeds a strict downstream parser. Accuracy is critical. Do NOT invent, calculate, or guess any numbers.
+Your output feeds a strict downstream parser. Accuracy and consistency are critical.
+NEVER invent, calculate, correct, or guess any numbers or text.
 
 ═══════════════════════════════════════════════════════════════
 PART 1 — OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════
 
-For EACH subject found in the PDF, output this exact block (no code fences, no extra markdown):
+For EACH subject found in the PDF, output EXACTLY this block (no code fences):
 
 ANNEX "<Letter>"
-Subject: <Exact Subject Name>
+Subject: <Exact Subject Name as printed>
 Weight: <N>%
 
 | Topics and Competencies | Weight | No. of Items | Remembering | Understanding | Applying | Analyzing | Evaluating | Creating |
@@ -93,112 +94,147 @@ Weight: <N>%
 | <row> | ... |
 | TOTAL | 100% | <N> | <N> | <N> | <N> | <N> | <N> | <N> |
 
-You MUST always produce exactly these 9 columns in this exact order.
+Always exactly 9 columns in that order.
 
 ═══════════════════════════════════════════════════════════════
-PART 2 — ROW CLASSIFICATION
+PART 2 — SUBJECT BOUNDARY DETECTION (CRITICAL)
 ═══════════════════════════════════════════════════════════════
 
-Each data row is one of four types. Identify it correctly:
+⚠️ EXTRACT EVERY SUBJECT IN THE PDF — NOT JUST THE FIRST ONE.
+A TOS PDF typically contains 4 subjects (sometimes more). You MUST output ALL of them.
+Do NOT stop after the first subject's grand TOTAL row. Continue processing the rest of
+the PDF until you reach the last page. Each subject gets its own complete block.
 
-TYPE A — SECTION HEADER (broad topic group):
-  Pattern: Starts with a LETTER prefix ("A.", "B.", "C.") OR a plain number ("1.", "2.")
-           WITHOUT a Bloom's item count on the same row.
-  Output: Fill Weight and No. of Items if printed in parentheses next to the header.
-          Leave all 6 Bloom's columns as 0.
-  Example: | A. Psychometric Properties of Psychological Assessment | 20% | 30 | 0 | 0 | 0 | 0 | 0 | 0 |
-  Example: | 1. Principles in Psychological Assessment | 5% | 8 | 0 | 0 | 0 | 0 | 0 | 0 |
+REAL EXAMPLE — this 12-page PDF contains 4 subjects:
+  Pages  1–3:  Developmental Psychology (20%)          ← output block 1
+  Pages  4–6:  Psychological Assessment/Psychometrician (40%)  ← output block 2
+  Pages  7–9:  Abnormal Psychology (20%)               ← output block 3
+  Pages 10–12: Industrial-Organizational Psychology (20%) ← output block 4
+ALL FOUR must appear in your output. If you only output 1 or 2, that is WRONG.
 
-TYPE B — DECIMAL COMPETENCY (standard):
-  Pattern: Code like "1.1", "2.3", "3,4" (dot OR comma separator), followed by description text.
-  Output: Extract code + full description merged into one cell. Fill all 9 columns.
-  CRITICAL: Code "3,4" (comma) is a valid competency code — treat it identically to "3.4".
+A subject block starts ONLY when "Subject:" appears in the PAGE HEADER area of a new page,
+accompanied by a "Weight:" line. A subject ends at its grand TOTAL row (100% weight).
+
+NEVER start a new subject block for any of these:
+  - Section letters repeating (e.g. a second "B." section header within the same table)
+  - Page continuation headers (pages 2, 3 of the same subject repeat the subject name)
+  - Section titles that mention common words like "Psychology", "Assessment", "Industrial"
+  - Any row inside the data table
+
+A single subject CAN and DOES span multiple pages. When a subject spans pages, the data
+table simply continues on the next page — do NOT start a new subject block.
+
+REAL EXAMPLE — "Industrial-Organizational Psychology" spans 3 pages (pages 10, 11, 12):
+  Page 10: Subject header + sections A and B (partial)
+  Page 11: Continuation — sections B (continued), C, D (no Subject: header on this page)
+  Page 12: Continuation — sections D (continued), E (no Subject: header on this page)
+  Grand Total appears on page 12 → THAT ends the subject.
+  Output: ONE subject block with ALL sections A through E.
+
+═══════════════════════════════════════════════════════════════
+PART 3 — ROW CLASSIFICATION
+═══════════════════════════════════════════════════════════════
+
+TYPE A — SECTION HEADER:
+  Starts with a letter ("A.", "B.", "C.") OR plain number ("1.", "2.") WITHOUT Bloom data.
+  Even if the same letter repeats (e.g., two "B." sections due to a PDF numbering error),
+  output BOTH as separate section header rows. Do NOT treat the second one as a new subject.
+  Example: | B. Human Resource Dev't & Human Resource Mgmt. | 25% | 25 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+TYPE B — DECIMAL COMPETENCY:
+  Code like "1.1", "2.3", "3,4" (comma is valid), followed by description text.
+  Merge all wrapped lines into one row. Extract all 9 columns.
   Example: | 1.1 Cite major tenets of the psychoanalytic... | | 8 | 8 | 0 | 0 | 0 | 0 | 0 |
 
-TYPE C — NUMBERED COMPETENCY (no decimal, carries Bloom data):
-  Pattern: Plain "1.", "2.", "3." prefix, but the row has numbers in the Bloom's columns.
-  This occurs in subjects like "Psychological Assessment/Psychometrician" where competencies
-  are numbered without sub-decimals.
-  Output: Treat as a full competency row — fill all 9 columns with extracted numbers.
-  Example: | 1. Ascertain psychometric properties essential in constructing, selecting, interpreting tests | | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-  IMPORTANT: Sub-bullets ("a. constructing", "b. selecting") are NOT separate rows.
-             They are part of the competency description. MERGE them into Column 1 text
-             and SUM their individual item counts into the single "No. of Items" cell.
-             Example: "a. constructing 2 / b. selecting 1 / c. interpreting 2" → No. of Items = 5
+TYPE C — NUMBERED COMPETENCY (no decimal):
+  Plain "1.", "2." prefix WITH Bloom data in the row.
+  Sub-bullets ("a. constructing 2", "b. selecting 1") belong to this row — merge their
+  descriptions into Column 1 and SUM their item counts into No. of Items.
+  Example: | 1. Ascertain psychometric properties in constructing, selecting, interpreting | | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
 
-TYPE D — TOTAL / SUBTOTAL:
-  Pattern: Row starts with "TOTAL" or "TOTALS".
-  Output: Extract weight, total items, and all 6 Bloom's values on the same row.
-  If the TOTAL row's Bloom values appear on the NEXT line (split layout), merge them.
-  Example of split layout to watch for:
-    Line 1: "TOTAL 100% 130 10"
-    Line 2: "39 (30%)  (40%)  39 (30%)"
-  In this case, emit a single TOTAL row with all values combined.
+TYPE D — SECTION TOTAL:
+  Starts with "TOTAL" or "TOTALS" (not 100%). Extract weight, items, and all 6 Bloom values.
+  If Bloom values appear on the next line (split layout), merge them into this row.
+
+TYPE E — GRAND TOTAL (subject end marker):
+  Patterns: "TOTAL 100%", "TOTALS 100%", "Total (for N items) 100%", "100%", "Grand Total"
+  ⚠ SPECIAL CASE — "Total (for N items) 100% 100 30% 40% 30%":
+    The trailing "30% 40% 30%" are DIFFICULTY BAND LABELS, not Bloom values.
+    Output all 6 Bloom columns as 0. Only extract the total item count (the number after 100%).
+    Example: | TOTAL | 100% | 100 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 ═══════════════════════════════════════════════════════════════
-PART 3 — SPECIFIC EDGE CASES TO HANDLE
+PART 4 — EDGE CASES
 ═══════════════════════════════════════════════════════════════
 
-EDGE CASE 1 — Parenthesised section weights/items:
-  Section headers sometimes show weight and items in parentheses, e.g. "(5%)" and "(8)".
-  Strip the parentheses and output the numeric value. Do NOT output the "()" characters.
-  Example PDF text: "1. Principles in Psychological Assessment (5%) (8)"
-  Output: | 1. Principles in Psychological Assessment | 5% | 8 | 0 | 0 | 0 | 0 | 0 | 0 |
+EC-1 PARENTHESISED WEIGHTS/ITEMS: "(5%) (8)" → output "5%" and "8" (no parens).
 
-EDGE CASE 2 — Missing weight on competency rows:
-  Some competencies have no percentage weight printed (blank weight cell).
-  Output an empty string "" for Weight. Never fabricate a percentage.
-  Example: | 1.1 Differentiate Anxiety Disorders from other psychological disorders | | 5 | 0 | 0 | 5 | 0 | 0 | 0 |
+EC-2 MISSING WEIGHT: If no percentage is printed for a competency, output "" for weight.
 
-EDGE CASE 3 — "X" or non-numeric total items:
-  If a section shows "X" or a dash instead of a number for total items (e.g., "A. Organization Theory 20% X"),
-  output 0 for No. of Items. Do not leave it blank or crash.
-  Example: | A. Organization Theory | 20% | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+EC-3 NON-NUMERIC ITEMS: "X" or "-" instead of a count → output 0.
 
-EDGE CASE 4 — Truncated or garbled section titles:
-  If a section title is clearly truncated in the PDF (e.g., "6. and Research" instead of
-  "6. Supervision and Research"), output the text EXACTLY as printed. Do NOT correct or
-  invent the missing words. The downstream system will handle normalization.
+EC-4 GARBLED SECTION TITLES: Output exactly as printed. Do NOT fix or complete them.
+  Example: "6. and Research" → output "6. and Research" verbatim.
 
-EDGE CASE 5 — "Difficulty Level" header block:
-  The PDF contains a visual sub-header: "Difficulty Level | Easy (30%) | Moderate (40%) | Difficult (30%)"
-  spanning the Bloom's column area. This is a LABEL — it has NO numeric data.
-  IGNORE this row entirely. Do NOT emit it as a table row.
+EC-5 DIFFICULTY LEVEL HEADER: The visual sub-header "Easy (30%) Moderate (40%) Difficult (30%)"
+  is a label spanning the Bloom columns. IGNORE it entirely — it is NOT a data row.
 
-EDGE CASE 6 — Bloom's values split across lines at page breaks:
-  When a competency's text wraps across multiple lines, all numeric values (Weight, No. of Items,
-  and all 6 Bloom's columns) still belong to that single competency row.
-  Merge all continuation lines into one row. Never emit a partial row.
+EC-6 MULTI-LINE WRAPPING — INCLUDING CROSS-PAGE BREAKS:
+  A competency whose description wraps across lines — even across a page boundary — still
+  occupies exactly ONE output row. You MUST merge ALL continuation text into Column 1.
+  This is the single most common cause of truncated descriptions. Do NOT stop merging at
+  a page boundary. If the text of a competency continues on the next page before any new
+  competency code appears, it is still part of the same row.
 
-EDGE CASE 7 — Column header label variants:
-  The "No. of Items" column may be labelled: "No. of items", "No. of Items", "No. of Item",
-  "Nos. of Item". All refer to the same column (column 3). Map them identically.
+  REAL EXAMPLE — competency "2.1 Explain the expected developmental tasks..." spans pages:
+    Page 2 ends: "2.1 Explain the expected developmental tasks in physical, cognitive,
+                  and socio-emotional during"   ← text is incomplete
+    Page 3 starts: "childhood, adolescence, and adulthood stages of development."  ← continuation
+  Correct output: | 2.1 Explain the expected developmental tasks in physical, cognitive,
+                    and socio-emotional during childhood, adolescence, and adulthood
+                    stages of development. | 5% | 5 | 0 | 5 | 0 | 0 | 0 | 0 |
+  WRONG output:   | 2.1 Explain the expected developmental tasks in physical, cognitive,
+                    and socio-emotional during | 5% | 5 | ...  ← TRUNCATED
+
+EC-7 COLUMN HEADER VARIANTS: "No. of items" / "No. of Items" / "No. of Item" / "Nos. of Item"
+  all map to column 3 (No. of Items).
+
+EC-8 ANNEX NOTATION VARIANTS: The ANNEX letter may be quoted in different ways:
+  ANNEX "A", ANNEX"B", ANNEX ''B" (two apostrophes), ANNEX (A), ANNEX A
+  All are valid — extract only the letter A or B.
+
+EC-9 DUPLICATE SECTION LETTERS: Some subjects contain a PDF numbering error where the same
+  section letter (e.g. "B.") is used twice. Both are legitimate sections of the SAME subject.
+  Output both as separate TYPE A rows within the same subject table.
+  REAL EXAMPLE in "Industrial-Organizational Psychology":
+    A. Organization Theory
+    B. Organizational Structures & Systems     ← first B
+    B. Human Resource Dev't & HR Mgmt.        ← second B (PDF error — still same subject!)
+    D. Team Dynamics
+    E. Organizational Change & Development
+
+EC-10 SECTION SUBTOTALS WITH BLOOM BANDS: Some section TOTAL rows contain difficulty-band
+  percentages (30%/40%/30%) instead of Bloom values. Example:
+    "TOTALS 100% 130 19(15%) 20(15%) 52(40%) 19(15%) 19(14%) 1(1%)"
+  The numbers in parens are percentages of total items. Extract the raw counts only:
+  Remembering=19, Understanding=20, Applying=52, Analyzing=19, Evaluating=19, Creating=1.
 
 ═══════════════════════════════════════════════════════════════
-PART 4 — WHAT TO SKIP ENTIRELY
+PART 5 — WHAT TO SKIP
 ═══════════════════════════════════════════════════════════════
 
-Skip these lines — do NOT emit them as table rows:
+Never emit as table rows:
   - Page headers: "Professional Regulatory Board of Psychology", "Table of Specifications"
-  - Board metadata: "Board for Psychologists", "as of February 2023", "Board for Psychometricians"
-  - PQF level: "PQF Level 6", "PQF Level 7"
-  - Difficulty band header: "Easy (30%)", "Moderate (40%)", "Difficult (30%)"
-  - Bloom's taxonomy label row: "Bloom's Taxonomy | Remembering | Understanding | ..."
+  - Board/date metadata: "Board for Psychologists", "as of February 2023", etc.
+  - PQF level lines: "PQF Level 6", "PQF Level 7", "(PQF Level 7)"
+  - Difficulty band header: "Easy (30%)", "Moderate (40%)", "Difficult (30%)", "Mod (40%)"
+  - Bloom taxonomy label row: "Bloom's Taxonomy | Remembering | Understanding | ..."
   - Column header row: "Topics and Competencies | Weight | No. of Items | ..."
-  - Introductory lines: "The examinees can perform the following competencies under each topic:"
-  - Page footers and OCR artefacts (underscores, dashes used as visual rules)
+  - Intro sentences: "The examinees can perform the following competencies under each topic:"
+  - Underscores/dashes used as visual dividers
+  - Page continuation of the subject name (same subject name repeated at top of page 2+)
 
-═══════════════════════════════════════════════════════════════
-PART 5 — SUBJECT BOUNDARY DETECTION
-═══════════════════════════════════════════════════════════════
-
-A new subject block starts whenever "Subject:" appears at the top of a page or in the page header.
-All four subjects in a single PDF may share the same ANNEX letter — that is normal.
-Emit a fresh block header (ANNEX / Subject / Weight) for each subject, then its table.
-The grand TOTAL row (100% weight) marks the END of a subject block.
-
-OUTPUT ONLY the plain text subject headers and markdown tables described above.
-No preamble, no commentary, no code fences.
+OUTPUT ONLY the plain text subject headers and markdown tables. No preamble, no commentary.
 """.strip()
 
 
@@ -327,6 +363,7 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
     """
     subjects    = []
     annex       = board = subj_name = subj_weight = None
+    subj_annex  = subj_board = None   # annex/board locked at subject start
     sections    = []
     cur_sec     = None
     cur_comp    = None
@@ -374,18 +411,23 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         nonlocal annex, board, subj_name, subj_weight
         nonlocal sections, cur_sec, grand_total
         nonlocal col_weight, col_ni, col_bloom, header_found
+        nonlocal subj_annex, subj_board
         _save_sec()
         has_content = bool(sections) or grand_total is not None
+        # Use the annex/board that were current when this subject STARTED,
+        # not whatever LlamaParse may have injected mid-table.
+        committed_annex = subj_annex or annex or ''
+        committed_board = subj_board or board or ''
         if subj_name and has_content:
             subjects.append({
-                'annex':       annex or '',
-                'board':       board or '',
+                'annex':       committed_annex,
+                'board':       committed_board,
                 'subject':     subj_name,
                 'weight':      subj_weight or '',
                 'sections':    sections,
                 'grand_total': grand_total or {**_zero_bloom(), 'total_items': 0, 'weight': '100%'},
             })
-            logger.info(f"Saved subject '{subj_name}' ({len(sections)} sections)")
+            logger.info(f"Saved subject '{subj_name}' annex={committed_annex} ({len(sections)} sections)")
         elif subj_name:
             logger.warning(
                 f"Skipping hollow flush for '{subj_name}' "
@@ -395,6 +437,7 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         annex = saved_annex
         board = saved_board
         subj_name = subj_weight = grand_total = None
+        subj_annex = subj_board = None
         sections     = []
         cur_sec      = None
         col_weight   = 1
@@ -466,7 +509,10 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
                     _save_comp()
                     _flush_subject()
                     annex, board = saved_annex, saved_board
-                    subj_name = new_name
+                    subj_name  = new_name
+                    # Lock annex/board to whatever was current at subject start
+                    subj_annex = annex
+                    subj_board = board
 
             # Weight:
             m = (re.match(r'\*{0,2}Weight:\*{0,2}\s*(\d+%)', stripped, re.I)
@@ -483,6 +529,17 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
 
         c0       = cells[0].strip()
         c0_clean = re.sub(r'\*+', '', c0).strip()
+
+        # ── Guard: bare subject-name repetition inside a table cell ───────────
+        # LlamaParse sometimes re-emits the current subject name as a standalone
+        # table cell (all other columns empty) — e.g. when it encounters a page
+        # continuation header mid-parse. Skip these silently; they are pure noise.
+        if (c0_clean
+                and all(cells[i].strip() == '' for i in range(1, len(cells)))
+                and subj_name
+                and _norm_subj(c0_clean) == _norm_subj(subj_name)):
+            logger.debug(f"Skipping bare subject-name repetition: '{c0_clean}'")
+            continue
 
         # LlamaParse sometimes injects Subject:/Weight: inside a table cell
         m_subj = re.match(r'Subject:\s*(.+)', c0_clean, re.I)
@@ -558,14 +615,29 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
         # ── section TOTAL row ──────────────────────────────────────────────────
         if re.match(r'^TOTALS?$', c0_clean, re.I):
             _save_comp()
+            wt_cell = cells[col_weight].strip() if col_weight < len(cells) else ''
             ni = _int(cells[col_ni]) if col_ni < len(cells) else 0
             bv = _bloom_vals(cells)
             bv = _bloom_sanity(bv, ni if ni > 0 else sum(bv))
             if ni == 0:
                 ni = sum(bv)
-            if cur_sec:
+
+            # Distinguish grand-total from section-total:
+            # If the weight cell is "100%" this TOTAL row is the grand total
+            # for the subject (LlamaParse sometimes emits it as "TOTAL 100% N ..."
+            # without the "100%" in col-0). Treat it as a grand total flush.
+            wt_is_100 = re.match(r'^100\s*%?$', re.sub(r'[%\s]', '', wt_cell) + '%')
+            if wt_is_100 and ni > 0:
+                logger.info(f"Section TOTAL row has 100% weight — treating as grand total (ni={ni})")
+                bv_guard = [v for v in bv]
+                # Guard: difficulty-band labels (30/40/30) sum to 100 — zero them
+                if sum(bv_guard) == 100 and all(v in (0, 30, 40) for v in bv_guard):
+                    bv_guard = [0] * 6
+                grand_total = {'weight': '100%', 'total_items': ni, **_bloom_dict(bv_guard)}
+                _flush_subject()
+            elif cur_sec:
                 cur_sec['total'] = {
-                    'weight': cells[col_weight] if col_weight < len(cells) else '',
+                    'weight': wt_cell,
                     'total_items': ni,
                     **_bloom_dict(bv),
                 }
@@ -661,6 +733,7 @@ def parse_llamaparse_markdown(full_md: str) -> dict:
     _save_comp()
     _flush_subject()
 
+    _nest_sections(subjects)
     logger.info(f"parse_llamaparse_markdown: {len(subjects)} subjects extracted")
     return {'subjects': subjects}
 
@@ -741,8 +814,13 @@ def _extract_page_headers(pdf_path: str) -> dict:
     headers = {}
     with pdfplumber.open(pdf_path) as pdf:
         for pn, page in enumerate(pdf.pages, 1):
-            # Only look at the top 20% of the page for subject/weight metadata
-            header_crop = page.crop((0, 0, page.width, page.height * 0.20))
+            # Use page.bbox[1] as the actual top of the page — some PDFs have
+            # a non-zero top margin (e.g. bbox[1] ≈ 0.02) which causes a
+            # ValueError if we crop from 0 instead of the real top edge.
+            page_top    = page.bbox[1]
+            page_bottom = page.bbox[3]
+            crop_bottom = page_top + (page_bottom - page_top) * 0.20
+            header_crop = page.crop((0, page_top, page.width, crop_bottom))
             header_text = header_crop.extract_text() or ''
             full_text   = page.extract_text() or ''
 
@@ -886,15 +964,23 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
                 return
 
             # Grand total — flush subject
-            if (re.match(r'^100%$', c0)
-                    or re.match(r'^TOTAL\s*100%', c0, re.I)
-                    or re.match(r'^TOTALS?\s*100%', c0, re.I)
-                    or re.match(r'^Total\s*\(for\s*\d+', c0, re.I)
-                    or re.match(r'^Grand\s*Total', c0, re.I)):
+            is_grand_geo = (
+                re.match(r'^100%$', c0)
+                or re.match(r'^TOTAL\s*100%', c0, re.I)
+                or re.match(r'^TOTALS?\s*100%', c0, re.I)
+                or re.match(r'^Total\s*\(for\s*\d+', c0, re.I)
+                or re.match(r'^Grand\s*Total', c0, re.I)
+            )
+            if is_grand_geo:
                 _sc()
                 ni = _int(cells[2])
                 bv = [_int(cells[j]) for j in range(3, 9)]
                 bv = _bloom_sanity_geo(bv, ni)
+                # "Total (for N items) 100% 100 30% 40% 30%" — trailing values are
+                # difficulty bands (30/40/30), not Bloom counts. Zero them out.
+                if sum(bv) == 100 and all(v in (0, 30, 40) for v in bv):
+                    logger.warning(f"Geometry: grand total Bloom look like difficulty bands {bv}, zeroing")
+                    bv = [0] * 6
                 grand_total = {'weight': '100%', 'total_items': ni, **_bloom_dict(bv)}
                 _flush()
                 return
@@ -1009,23 +1095,169 @@ def parse_pdf_geometry(pdf_path: str) -> dict:
             _proc(prev)
 
     _sc(); _flush()
+    _nest_sections(subjects)
     logger.info(f"parse_pdf_geometry: {len(subjects)} subjects extracted")
     return {'subjects': subjects}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hierarchy post-processor
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _nest_sections(subjects: list) -> list:
+    """
+    Convert the flat sections list produced by both parsers into a two-level
+    hierarchy that the frontend can render without custom logic:
+
+    BEFORE (flat):
+      sections: [
+        {"title": "A. Perspectives on Nature and Nurture", "competencies": [...]},
+        {"title": "B. Research Methods...",                "competencies": []},
+        {"title": "1. Ethics in Conducting Research",      "competencies": [...]},
+        {"title": "2. Research Methods in Dev Psych",      "competencies": [...]},
+        {"title": "C. Developmental Theories",             "competencies": []},
+        {"title": "1. Theories of development...",         "competencies": [...]},
+      ]
+
+    AFTER (nested):
+      sections: [
+        {"title": "A. Perspectives on Nature and Nurture",
+         "level": "letter", "subsections": [], "competencies": [...]},
+        {"title": "B. Research Methods...",
+         "level": "letter",
+         "subsections": [
+           {"title": "1. Ethics in Conducting Research",
+            "level": "number", "subsections": [], "competencies": [...]},
+           {"title": "2. Research Methods in Dev Psych",
+            "level": "number", "subsections": [], "competencies": [...]},
+         ],
+         "competencies": []},
+        {"title": "C. Developmental Theories",
+         "level": "letter",
+         "subsections": [
+           {"title": "1. Theories of development...",
+            "level": "number", "subsections": [], "competencies": [...]},
+         ],
+         "competencies": []},
+      ]
+
+    Rules:
+    - A section whose title starts with a LETTER prefix (A., B., …, F.) is a
+      top-level (letter) section.
+    - A section whose title starts with a NUMBER prefix (1., 2., …) is a
+      subsection and belongs to the most-recently-seen letter section.
+    - If a number-prefixed section has no preceding letter section it is
+      promoted to the top level (level="number") so nothing is lost.
+    - The existing "total" and "grand_total" keys are preserved unchanged.
+    - A new "level" key ("letter" | "number") is added to every section.
+    - A new "subsections" key (list) is added to every section.
+    """
+    _letter_re = re.compile(r'^[A-F]\.\s+\S', re.I)
+    _number_re = re.compile(r'^\d{1,2}\.\s+\S')
+
+    for subj in subjects:
+        flat = subj.get('sections', [])
+        nested   = []
+        cur_letter = None   # the most recent letter-level section dict
+
+        for sec in flat:
+            title = sec.get('title', '')
+            is_letter = bool(_letter_re.match(title))
+            is_number = bool(_number_re.match(title)) and not is_letter
+
+            if is_letter:
+                sec['level']       = 'letter'
+                sec['subsections'] = []
+                nested.append(sec)
+                cur_letter = sec
+
+            elif is_number:
+                sec['level']       = 'number'
+                sec['subsections'] = []
+                if cur_letter is not None:
+                    cur_letter['subsections'].append(sec)
+                else:
+                    # No parent letter section yet — promote to top level
+                    nested.append(sec)
+
+            else:
+                # Unclassifiable title (empty, truncated, etc.) — keep as-is
+                sec.setdefault('level', 'letter')
+                sec.setdefault('subsections', [])
+                nested.append(sec)
+                cur_letter = sec
+
+        subj['sections'] = nested
+
+    return subjects
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Quality check
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _result_is_good(data: dict) -> bool:
+def _count_expected_subjects(pdf_path: str) -> int:
+    """
+    Count how many distinct Subject: headers appear in the page header area.
+    Uses the same safe bbox logic as _extract_page_headers to avoid crop errors.
+    Deduplicates fuzzy-normalised names so variants like
+    'Industrial-Organizational' and 'Industrial/Organizational' count as one.
+    """
+    seen = set()
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_top    = page.bbox[1]
+                page_bottom = page.bbox[3]
+                # Use only the top 20% — same as _extract_page_headers
+                crop_bottom = page_top + (page_bottom - page_top) * 0.20
+                hdr = page.crop((0, page_top, page.width, crop_bottom))
+                hdr_text = hdr.extract_text() or ''
+                m = re.search(r'^Subject:\s*(.+)$', hdr_text, re.I | re.M)
+                if m:
+                    raw = m.group(1).strip()
+                    # Fuzzy-normalise: collapse -/  and whitespace, lowercase
+                    norm = re.sub(r'[-/]', ' ', raw)
+                    norm = re.sub(r'\s+', ' ', norm).strip().lower()
+                    seen.add(norm)
+    except Exception as e:
+        logger.warning(f"_count_expected_subjects failed: {e}")
+    return max(1, len(seen))
+
+
+def _result_is_good(data: dict, expected_subjects: int = 1) -> bool:
+    """
+    Quality check for extracted TOS data.
+
+    Fails if:
+    - No subjects found
+    - Fewer subjects than expected (LlamaParse returned partial output)
+    - Fewer than 5 competencies total
+    - Fewer than 10% of competencies have any bloom data
+
+    Works with BOTH the old flat section structure and the new nested structure
+    (sections can have subsections after _nest_sections() runs).
+    """
     subjs = data.get('subjects', [])
     if not subjs:
         return False
-    comps = [
-        c for s in subjs
-        for sec in s.get('sections', [])
-        for c in sec.get('competencies', [])
-    ]
+
+    if len(subjs) < expected_subjects:
+        logger.warning(
+            f"Quality check failed: got {len(subjs)} subjects, "
+            f"expected {expected_subjects} — partial LlamaParse output"
+        )
+        return False
+
+    def _collect_comps(sections):
+        """Collect competencies from sections + their subsections."""
+        result = []
+        for sec in sections:
+            result.extend(sec.get('competencies', []))
+            result.extend(_collect_comps(sec.get('subsections', [])))
+        return result
+
+    comps = [c for s in subjs for c in _collect_comps(s.get('sections', []))]
     if len(comps) < 5:
         return False
     bloom_ok = sum(1 for c in comps if any(c.get(k, 0) > 0 for k in BLOOM_KEYS))
@@ -1055,6 +1287,11 @@ def extract(pdf_path: str, source_hash: str) -> tuple:
     if not Path(pdf_path).exists():
         return False, f"PDF not found: {pdf_path}", None
 
+    # Count how many subjects this PDF is expected to contain
+    # so we can detect LlamaParse partial-output failures
+    expected_subjects = _count_expected_subjects(pdf_path)
+    logger.info(f"Expected subjects in PDF: {expected_subjects}")
+
     for attempt in range(1, config.MAX_RETRIES + 1):
         try:
             logger.info(f"Extraction attempt {attempt}: {pdf_path}")
@@ -1066,10 +1303,11 @@ def extract(pdf_path: str, source_hash: str) -> tuple:
                     md     = llamaparse_extract_markdown(pdf_path)
                     data   = parse_llamaparse_markdown(md)
                     method = 'llamaparse'
-                    if not _result_is_good(data):
+                    if not _result_is_good(data, expected_subjects):
                         logger.warning(
                             f"LlamaParse quality insufficient "
-                            f"({len(data.get('subjects',[]))} subjects) — geometry fallback"
+                            f"(got {len(data.get('subjects',[]))} of {expected_subjects} subjects) "
+                            f"— geometry fallback"
                         )
                         data = method = None
                     else:
@@ -1093,9 +1331,10 @@ def extract(pdf_path: str, source_hash: str) -> tuple:
                 logger.info("Using pdfplumber geometry extraction…")
                 data   = parse_pdf_geometry(pdf_path)
                 method = 'geometry'
-                if not _result_is_good(data):
+                if not _result_is_good(data, expected_subjects):
                     logger.warning(
-                        f"Geometry also weak ({len(data.get('subjects',[]))} subjects)"
+                        f"Geometry also weak "
+                        f"(got {len(data.get('subjects',[]))} of {expected_subjects} subjects)"
                     )
 
             result = {
