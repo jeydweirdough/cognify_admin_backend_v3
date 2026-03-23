@@ -499,28 +499,43 @@ async def resolve_module_subject_admin(request: Request, module_id: str):
 
 @mobile_subjects_router.get("")
 async def mobile_list_subjects(request: Request):
-    """List all APPROVED subjects for the student."""
+    """
+    List subjects for the student.
+    Only shows APPROVED subjects whose name appears in the currently ACTIVE TOS version.
+    If no TOS version is active, falls back to showing all APPROVED subjects.
+    """
     auth = mobile_permission_required("mobile_view_subjects")(request)
     page, per_page = get_page_params(request, default_per_page=50, max_per_page=200)
     search = get_search(request)
+
     sql = """SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name
              FROM subjects s LEFT JOIN users u ON u.id = s.created_by
              WHERE s.status = 'APPROVED'"""
     params = []
+
     if search:
         sql += " AND LOWER(s.name) LIKE LOWER(%s)"
         params.append(f"%{search}%")
+
+    # Always restrict to subjects aligned with the active TOS version
+    active_tos_subjects = _get_active_tos_subjects()
+    if active_tos_subjects:
+        placeholders = ",".join(["%s"] * len(active_tos_subjects))
+        sql += f" AND s.name IN ({placeholders})"
+        params += active_tos_subjects
+
     sql += " ORDER BY s.name"
     from app.db import paginate
     result = paginate(sql, params, page, per_page)
+
     for r in result["items"]:
         r["id"] = str(r["id"])
         if r.get("created_by"): r["created_by"] = str(r["created_by"])
-        # Include module and ebook counts (APPROVED only for students)
         cnt_mod   = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'MODULE'  AND status = 'APPROVED'", [r["id"]])
         cnt_ebook = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'E-BOOK' AND status = 'APPROVED'", [r["id"]])
         r["module_count"] = cnt_mod["c"]   if cnt_mod   else 0
         r["ebook_count"]  = cnt_ebook["c"] if cnt_ebook else 0
+
     return ok(result)
 
 
