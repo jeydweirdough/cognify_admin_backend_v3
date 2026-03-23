@@ -43,6 +43,7 @@ import tempfile
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Path, Request, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from psycopg2.extras import Json as PgJson
 
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
@@ -142,6 +143,16 @@ async def upload_tos_pdf(
     version_year  = clean_str(academic_year) or "2024-2025"
     version_notes = clean_str(notes) or None
 
+    # Persistent storage for the PDF
+    storage_dir = os.path.join("storage", "tos_pdfs")
+    os.makedirs(storage_dir, exist_ok=True)
+    pdf_path = os.path.join(storage_dir, f"{source_hash}.pdf")
+    
+    # Save the PDF if it doesn't exist
+    if not os.path.exists(pdf_path):
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+
     # Write PDF to a temp file for the extractor
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(pdf_bytes)
@@ -191,6 +202,11 @@ async def upload_tos_pdf(
         extracted_at, PgJson(data_payload), version_notes, auth.user_id
     ])
 
+    # Populate pdf_url now that we have the ID
+    pdf_url = f"/api/web/admin/tos/{row['id']}/pdf"
+    execute("UPDATE tos_versions SET pdf_url = %s WHERE id = %s", [pdf_url, row['id']])
+    row["pdf_url"] = pdf_url
+
     log_action(
         "Uploaded TOS PDF", version_label, row["id"],
         user_id=auth.user_id, ip=auth.ip
@@ -211,7 +227,7 @@ async def list_tos_versions(request: Request):
 
     sql = """
         SELECT
-            t.id, t.label, t.academic_year, t.source_hash,
+            t.id, t.label, t.academic_year, t.source_hash, t.pdf_url,
             t.extraction_method, t.extracted_at,
             t.status, t.notes, t.created_by, t.created_at, t.updated_at,
             u.first_name || ' ' || u.last_name AS created_by_name
@@ -261,6 +277,31 @@ async def get_tos_version(tos_id: str, request: Request):
         return not_found("TOS version not found")
 
     return ok(_serialize(row))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN — VIEW PDF
+# ─────────────────────────────────────────────────────────────────────────────
+
+@admin_tos_router.get("/{tos_id}/pdf")
+async def get_tos_pdf(tos_id: str, request: Request):
+    """Serve the original PDF associated with a TOS version."""
+    auth = permission_required("view_tos")(request)
+
+    row = fetchone("SELECT source_hash FROM tos_versions WHERE id = %s", [tos_id])
+    if not row or not row.get("source_hash"):
+        return not_found("TOS version or PDF hash not found")
+
+    source_hash = row["source_hash"]
+    pdf_path = os.path.join("storage", "tos_pdfs", f"{source_hash}.pdf")
+
+    if not os.path.exists(pdf_path):
+        return not_found("PDF file not found on server. It may have been uploaded before PDF storage was enabled.")
+
+    return FileResponse(
+        pdf_path, 
+        media_type="application/pdf"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

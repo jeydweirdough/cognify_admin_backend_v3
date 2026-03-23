@@ -93,6 +93,7 @@ CREATE TABLE users (
     personal_note     TEXT,
     last_login        TIMESTAMPTZ,
     photo_avatar      TEXT,
+    avatar_index      INT,
     date_created      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -240,6 +241,7 @@ CREATE TABLE tos_versions (
     label             VARCHAR(200) NOT NULL,
     academic_year     VARCHAR(20)  NOT NULL DEFAULT '2024-2025',
     source_hash       VARCHAR(64),
+    pdf_url           TEXT,
     extraction_method VARCHAR(30)
                       CHECK (extraction_method IN ('llamaparse','geometry','manual')),
     extracted_at      TIMESTAMPTZ,
