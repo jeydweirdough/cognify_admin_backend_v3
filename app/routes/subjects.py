@@ -19,12 +19,22 @@ mobile_subjects_router  = APIRouter(prefix="/api/mobile/student/subjects",    ta
 # CORE HELPERS & CONDITIONAL ACCESS LOGIC
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_active_tos_subjects() -> list[str]:
-    """Fetch the list of subject names from the currently ACTIVE TOS version."""
+def _get_active_tos_subjects() -> list[str] | None:
+    """
+    Fetch subject names from the currently ACTIVE TOS version.
+
+    Returns:
+      None        — no TOS version is currently set to ACTIVE (fallback: show all)
+      []          — TOS is ACTIVE but contains no subjects (show nothing)
+      ["name",…]  — TOS is ACTIVE with subjects (show only those)
+    """
     row = fetchone("SELECT data FROM tos_versions WHERE status = 'ACTIVE' LIMIT 1")
-    if not row or not row.get("data") or "subjects" not in row["data"]:
-        return []
-    return [s["subject"] for s in row["data"]["subjects"] if "subject" in s]
+    if not row:
+        # No active TOS at all — caller decides fallback behaviour
+        return None
+    data = row.get("data") or {}
+    subjects_list = data.get("subjects") or []
+    return [s["subject"] for s in subjects_list if s.get("subject")]
 
 def _format_module(m: dict) -> dict:
     m["id"] = str(m["id"])
@@ -107,13 +117,13 @@ def _list_subjects(request: Request, role: str):
 
     if active_tos_only:
         active_subjects = _get_active_tos_subjects()
-        if active_subjects:
+        if active_subjects is None or len(active_subjects) == 0:
+            # No active TOS or active TOS has no subjects — return nothing
+            sql.append("AND 1=0")
+        else:
             placeholders = ",".join(["%s"] * len(active_subjects))
             sql.append(f"AND s.name IN ({placeholders})")
             params += active_subjects
-        else:
-            # If no active TOS, return nothing
-            sql.append("AND 1=0")
         
     sql.append("ORDER BY s.name")
     result = paginate(" ".join(sql), params, page, per_page)
@@ -517,9 +527,18 @@ async def mobile_list_subjects(request: Request):
         sql += " AND LOWER(s.name) LIKE LOWER(%s)"
         params.append(f"%{search}%")
 
-    # Always restrict to subjects aligned with the active TOS version
+    # Always restrict to subjects aligned with the active TOS version.
+    # None  → no active TOS, show all approved subjects (safe fallback)
+    # []    → active TOS exists but has no subjects → show nothing
+    # [..] → show only subjects whose name is in the active TOS
     active_tos_subjects = _get_active_tos_subjects()
-    if active_tos_subjects:
+    if active_tos_subjects is None:
+        # No TOS active — show all approved subjects
+        pass
+    elif len(active_tos_subjects) == 0:
+        # Active TOS has no subjects — block everything
+        sql += " AND 1=0"
+    else:
         placeholders = ",".join(["%s"] * len(active_tos_subjects))
         sql += f" AND s.name IN ({placeholders})"
         params += active_tos_subjects
