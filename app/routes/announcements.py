@@ -225,7 +225,7 @@ async def mobile_get_notifications(request: Request):
     auth = mobile_permission_required("mobile_login")(request)
 
     rows = fetchall(
-        """SELECT a.id, a.title, a.body, a.type, a.created_at, a.expires_at,
+        """SELECT a.id, a.title, a.body, a.type, a.tos_progress, a.created_at, a.expires_at,
                   CASE WHEN nr.id IS NOT NULL THEN TRUE ELSE FALSE END AS is_read
            FROM announcements a
            LEFT JOIN notification_reads nr
@@ -241,11 +241,12 @@ async def mobile_get_notifications(request: Request):
     items = []
     for r in rows:
         items.append({
-            "id":         str(r["id"]),
-            "title":      r["title"],
-            "body":       r["body"],
-            "type":       r["type"],
-            "read":       bool(r["is_read"]),
+            "id":           str(r["id"]),
+            "title":        r["title"],
+            "body":         r["body"],
+            "type":         r["type"],
+            "tos_progress": r["tos_progress"],
+            "read":         bool(r["is_read"]),
             "created_at": r["created_at"].isoformat(),
             "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
         })
