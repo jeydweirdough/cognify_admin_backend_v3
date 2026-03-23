@@ -168,16 +168,25 @@ async def delete_announcement(ann_id: str, request: Request):
 async def get_active_announcements(request: Request):
     auth = login_required(request)
     rows = fetchall(
-        """SELECT id, title, body, type, audience, tos_progress, expires_at, created_at
-           FROM announcements
-           WHERE is_active = TRUE
-             AND (expires_at IS NULL OR expires_at > NOW())
-             AND (audience = 'ALL' OR audience = %s)
-           ORDER BY created_at DESC
+        """SELECT a.id, a.title, a.body, a.type, a.audience, a.tos_progress,
+                  a.expires_at, a.created_at,
+                  CASE WHEN nr.id IS NOT NULL THEN TRUE ELSE FALSE END AS is_read
+           FROM announcements a
+           LEFT JOIN notification_reads nr
+             ON nr.announcement_id = a.id AND nr.user_id = %s
+           WHERE a.is_active = TRUE
+             AND (a.expires_at IS NULL OR a.expires_at > NOW())
+             AND (a.audience = 'ALL' OR a.audience = %s)
+           ORDER BY a.created_at DESC
            LIMIT 20""",
-        [auth.role.upper()],
+        [auth.user_id, auth.role.upper()],
     )
-    return ok([_serialize(r) for r in rows])
+    serialized = []
+    for r in rows:
+        s = _serialize(dict(r))
+        s["read"] = bool(r["is_read"])
+        serialized.append(s)
+    return ok(serialized)
 
 # ─── Mobile student notifications ────────────────────────────────────────────
 # Students see:
@@ -192,23 +201,41 @@ mobile_notifications_router = APIRouter(
 )
 
 
+@public_announcements_router.patch("/{notif_id}/read")
+async def web_mark_announcement_read(request: Request, notif_id: str):
+    """Mark an announcement as read for the logged-in web user (admin/faculty)."""
+    auth = login_required(request)
+    execute(
+        """INSERT INTO notification_reads (user_id, announcement_id)
+           VALUES (%s, %s)
+           ON CONFLICT (user_id, announcement_id) DO NOTHING""",
+        [auth.user_id, notif_id],
+    )
+    return ok({"read": True})
+
+
 @mobile_notifications_router.get("")
 async def mobile_get_notifications(request: Request):
     """
     Return active announcements for the authenticated student.
     Filters to audience = 'ALL' or 'STUDENT', not expired, active only.
+    Includes per-user read status via LEFT JOIN on notification_reads.
     Returns newest first, max 50.
     """
     auth = mobile_permission_required("mobile_login")(request)
 
     rows = fetchall(
-        """SELECT id, title, body, type, created_at, expires_at
-           FROM announcements
-           WHERE is_active = TRUE
-             AND (expires_at IS NULL OR expires_at > NOW())
-             AND audience IN ('ALL', 'STUDENT')
-           ORDER BY created_at DESC
+        """SELECT a.id, a.title, a.body, a.type, a.created_at, a.expires_at,
+                  CASE WHEN nr.id IS NOT NULL THEN TRUE ELSE FALSE END AS is_read
+           FROM announcements a
+           LEFT JOIN notification_reads nr
+             ON nr.announcement_id = a.id AND nr.user_id = %s
+           WHERE a.is_active = TRUE
+             AND (a.expires_at IS NULL OR a.expires_at > NOW())
+             AND a.audience IN ('ALL', 'STUDENT')
+           ORDER BY a.created_at DESC
            LIMIT 50""",
+        [auth.user_id],
     )
 
     items = []
@@ -217,7 +244,8 @@ async def mobile_get_notifications(request: Request):
             "id":         str(r["id"]),
             "title":      r["title"],
             "body":       r["body"],
-            "type":       r["type"],           # INFO | WARNING | SUCCESS | TOS_PROGRESS
+            "type":       r["type"],
+            "read":       bool(r["is_read"]),
             "created_at": r["created_at"].isoformat(),
             "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
         })
