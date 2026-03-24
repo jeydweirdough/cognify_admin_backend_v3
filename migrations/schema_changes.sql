@@ -733,3 +733,7 @@ SET permissions = permissions
 WHERE name = 'STUDENT'
   AND (permissions @> '"mobile_add_session"'::jsonb)
   AND NOT (permissions @> '"mobile_edit_session"'::jsonb);
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS has_taken_diagnostic BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS readiness_score      NUMERIC(5,2);

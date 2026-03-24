@@ -17,12 +17,14 @@ mobile_profile_router = APIRouter(
 )
 
 UPDATABLE_FIELDS = {
-    "first_name":    ("first_name",    lambda v: clean_str(v)),
-    "last_name":     ("last_name",     lambda v: clean_str(v)),
-    "username":      ("username",      lambda v: clean_str(v)),
-    "daily_goal":    ("daily_goal",    lambda v: clean_str(v)),
-    "personal_note": ("personal_note", lambda v: v.strip() if v else None),
-    "photo_avatar":  ("photo_avatar",  lambda v: clean_str(v)),
+    "first_name":           ("first_name",           lambda v: clean_str(v)),
+    "last_name":            ("last_name",            lambda v: clean_str(v)),
+    "username":             ("username",             lambda v: clean_str(v)),
+    "daily_goal":           ("daily_goal",           lambda v: clean_str(v)),
+    "personal_note":        ("personal_note",        lambda v: v.strip() if v else None),
+    "photo_avatar":         ("photo_avatar",         lambda v: clean_str(v)),
+    "has_taken_diagnostic": ("has_taken_diagnostic", lambda v: bool(v)),
+    "readiness_score":      ("readiness_score",      lambda v: float(v) if v is not None else None),
 }
 
 def get_preset_url(index: int) -> str | None:
@@ -41,6 +43,8 @@ def _fmt_profile(u: dict) -> dict:
         u["date_created"] = u["date_created"].isoformat()
     if u.get("last_login"):
         u["last_login"] = u["last_login"].isoformat()
+    u["hasTakenDiagnostic"] = bool(u.pop("has_taken_diagnostic", False))
+    u["readinessScore"] = float(u.pop("readiness_score", 0) or 0)
     return u
 
 
@@ -50,7 +54,8 @@ async def get_profile(request: Request):
     user = fetchone(
         """SELECT id, cvsu_id, first_name, last_name, email,
                   username, daily_goal, personal_note, photo_avatar,
-                  status, date_created, last_login
+                  status, date_created, last_login,
+                  has_taken_diagnostic, readiness_score
            FROM users WHERE id = %s""",
         [auth.user_id],
     )
@@ -119,7 +124,8 @@ async def update_profile(request: Request):
             WHERE id = %s
             RETURNING id, cvsu_id, first_name, last_name, email,
                       username, daily_goal, personal_note, photo_avatar,
-                      status, date_created, last_login"""
+                      status, date_created, last_login,
+                      has_taken_diagnostic, readiness_score"""
     try:
         updated = execute_returning(sql, params)
         if not updated:
