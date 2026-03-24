@@ -1,13 +1,11 @@
 {
-  "functions": {
-    "/api/index.py": {
-      "regions": ["sin1"]
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index.py"
-    }
-  ]
-}
+     "functions": {
+       "api/index.py": {
+         "runtime": "python3.12",
+         "regions": ["sin1"]
+       }
+     },
+     "rewrites": [
+       { "source": "/(.*)", "destination": "/api/index.py" }
+     ]
+   }
