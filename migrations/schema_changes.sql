@@ -22,21 +22,23 @@
 -- §0  DROP ALL TABLES  (reverse FK order, CASCADE for safety)
 -- ============================================================
 
-DROP TABLE IF EXISTS module_reads         CASCADE;
-DROP TABLE IF EXISTS student_moods        CASCADE;
-DROP TABLE IF EXISTS activity_logs        CASCADE;
-DROP TABLE IF EXISTS announcements        CASCADE;
-DROP TABLE IF EXISTS tos_versions         CASCADE;
-DROP TABLE IF EXISTS assessment_results   CASCADE;
-DROP TABLE IF EXISTS questions            CASCADE;
-DROP TABLE IF EXISTS assessments          CASCADE;
-DROP TABLE IF EXISTS request_changes      CASCADE;
-DROP TABLE IF EXISTS modules              CASCADE;
-DROP TABLE IF EXISTS subjects             CASCADE;
-DROP TABLE IF EXISTS system_settings      CASCADE;
-DROP TABLE IF EXISTS whitelist            CASCADE;
-DROP TABLE IF EXISTS users                CASCADE;
-DROP TABLE IF EXISTS roles                CASCADE;
+DROP TABLE IF EXISTS notification_reads     CASCADE;
+DROP TABLE IF EXISTS module_reads           CASCADE;
+DROP TABLE IF EXISTS student_sessions       CASCADE;
+DROP TABLE IF EXISTS student_moods          CASCADE;
+DROP TABLE IF EXISTS activity_logs          CASCADE;
+DROP TABLE IF EXISTS announcements          CASCADE;
+DROP TABLE IF EXISTS tos_versions           CASCADE;
+DROP TABLE IF EXISTS assessment_results     CASCADE;
+DROP TABLE IF EXISTS questions              CASCADE;
+DROP TABLE IF EXISTS assessments            CASCADE;
+DROP TABLE IF EXISTS request_changes        CASCADE;
+DROP TABLE IF EXISTS modules                CASCADE;
+DROP TABLE IF EXISTS subjects               CASCADE;
+DROP TABLE IF EXISTS system_settings        CASCADE;
+DROP TABLE IF EXISTS whitelist              CASCADE;
+DROP TABLE IF EXISTS users                  CASCADE;
+DROP TABLE IF EXISTS roles                  CASCADE;
 
 -- Drop views explicitly (they survive table drops but are stale)
 DROP VIEW IF EXISTS view_admin_dashboard_stats         CASCADE;
@@ -299,7 +301,7 @@ CREATE TABLE student_moods (
 );
 
 -- ── MODULE READS ──────────────────────────────────────────────
--- Tracks which modules a student has read to completion
+-- Tracks which modules a student has read to completion.
 CREATE TABLE module_reads (
     id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -307,6 +309,33 @@ CREATE TABLE module_reads (
     subject_id UUID        NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
     read_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, module_id)
+);
+
+-- ── STUDENT SESSIONS ──────────────────────────────────────────
+-- Persistent study session / to-do list for students.
+CREATE TABLE student_sessions (
+    id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title        VARCHAR(300) NOT NULL,
+    subject      VARCHAR(200),
+    session_date DATE         NOT NULL,
+    start_time   VARCHAR(20),
+    end_time     VARCHAR(20),
+    completed    BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- ── NOTIFICATION READS ────────────────────────────────────────
+-- Tracks per-student read status for announcements.
+-- Used by the mobile /notifications endpoint to compute
+-- unread counts and mark individual notifications as read.
+CREATE TABLE notification_reads (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    announcement_id UUID        NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    read_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, announcement_id)
 );
 
 
@@ -365,6 +394,13 @@ CREATE INDEX idx_questions_competency_codes ON questions USING gin(competency_co
 
 CREATE INDEX idx_module_reads_user    ON module_reads(user_id);
 CREATE INDEX idx_module_reads_subject ON module_reads(user_id, subject_id);
+
+CREATE INDEX idx_student_sessions_user      ON student_sessions(user_id);
+CREATE INDEX idx_student_sessions_date      ON student_sessions(user_id, session_date);
+CREATE INDEX idx_student_sessions_completed ON student_sessions(user_id, completed);
+
+CREATE INDEX idx_notification_reads_user         ON notification_reads(user_id);
+CREATE INDEX idx_notification_reads_announcement ON notification_reads(announcement_id);
 
 
 -- ============================================================
@@ -443,189 +479,31 @@ LEFT JOIN subjects    s ON r.target_id  = s.id AND r.type = 'SUBJECT'
 LEFT JOIN assessments a ON r.target_id  = a.id AND r.type = 'ASSESSMENT';
 
 
--- V2 patch integrated: separate progress vs readiness calculations 
+-- view_student_individual_readiness
+--
+-- Only considers subjects that are part of the currently ACTIVE TOS version.
+-- Readiness formula uses weighted assessment types + mock exam reality-check blend:
+--   Weights: MOCK_EXAM=40%, FINAL_ASSESSMENT=30%, POST_ASSESSMENT=20%, QUIZ=10%
+--   Mock blend: if mock < computed → 70% computed + 30% mock
+--               if mock >= computed → 80% computed + 20% mock
+-- Deduplication: only the latest attempt per assessment per user is counted.
 CREATE OR REPLACE VIEW view_student_individual_readiness AS
 WITH
+active_tos AS (
+    SELECT data->'subjects' AS subjects
+    FROM   tos_versions
+    WHERE  status = 'ACTIVE'
+    LIMIT 1
+),
+active_subject_names AS (
+    SELECT jsonb_array_elements(subjects)->>'subject' AS name
+    FROM   active_tos
+),
 approved_subjects AS (
-    SELECT id, name
-    FROM   subjects
-    WHERE  status = 'APPROVED'
-),
-total_approved AS (
-    SELECT COUNT(*) AS cnt
-    FROM   approved_subjects
-),
--- Step 1: per student x subject x assessment type → average score %
-type_avgs AS (
-    SELECT
-        ar.user_id,
-        a.subject_id,
-        a.type,
-        AVG((ar.score::NUMERIC / NULLIF(ar.total_items, 0)) * 100) AS type_avg
-    FROM  assessment_results ar
-    JOIN  assessments a ON a.id = ar.assessment_id
-    WHERE a.subject_id IN (SELECT id FROM approved_subjects)
-      AND a.type <> 'PRE_ASSESSMENT'
-    GROUP BY ar.user_id, a.subject_id, a.type
-),
--- Step 2: per student x subject → AVERAGE across all attempted type averages
-subject_readiness AS (
-    SELECT
-        user_id,
-        subject_id,
-        AVG(type_avg) AS subject_score
-    FROM  type_avgs
-    GROUP BY user_id, subject_id
-),
--- Progress: count distinct subjects the student has at least one non-PRE result for
-subject_attempted AS (
-    SELECT
-        ar.user_id,
-        COUNT(DISTINCT a.subject_id) AS subjects_attempted
-    FROM  assessment_results ar
-    JOIN  assessments a ON a.id = ar.assessment_id
-    WHERE a.subject_id IN (SELECT id FROM approved_subjects)
-      AND a.type <> 'PRE_ASSESSMENT'
-    GROUP BY ar.user_id
-)
-SELECT
-    u.id         AS user_id,
-    u.first_name,
-    u.last_name,
-    -- READINESS: score-based average, zero-fills untouched subjects
-    ROUND(
-        COALESCE(SUM(COALESCE(sr.subject_score, 0)), 0)::NUMERIC
-        / NULLIF((SELECT cnt FROM total_approved), 0),
-    1) AS readiness_percentage,
-    -- PROGRESS: attempt-based, how much of the curriculum has been touched
-    ROUND(
-        COALESCE(sa.subjects_attempted, 0)::NUMERIC
-        / NULLIF((SELECT cnt FROM total_approved), 0)
-        * 100,
-    1) AS progress_percentage
-FROM       users              u
-JOIN       roles              r   ON r.id  = u.role_id
-CROSS JOIN approved_subjects  ap
-LEFT JOIN  subject_readiness  sr  ON sr.user_id    = u.id
-                                 AND sr.subject_id = ap.id
-LEFT JOIN  subject_attempted  sa  ON sa.user_id    = u.id
-WHERE  r.name ILIKE 'student'
-  AND  u.status = 'ACTIVE'
-GROUP BY u.id, u.first_name, u.last_name, sa.subjects_attempted;
-
-
-CREATE OR REPLACE VIEW view_general_readiness AS
-SELECT ROUND(AVG(readiness_percentage), 2) AS overall_system_readiness
-FROM   view_student_individual_readiness
-WHERE  readiness_percentage IS NOT NULL;
-
-
-CREATE OR REPLACE VIEW view_admin_dashboard_stats AS
-SELECT
-    (SELECT maintenance_mode FROM system_settings WHERE id = 1)
-        AS is_maintenance_mode,
-    (SELECT COUNT(u.id)
-     FROM users u INNER JOIN roles r ON u.role_id = r.id
-     WHERE r.name ILIKE 'student' AND u.status = 'ACTIVE')
-        AS total_active_students,
-    (SELECT COUNT(id) FROM subjects WHERE status = 'APPROVED')
-        AS total_approved_subjects,
-    (SELECT COUNT(id) FROM modules WHERE status = 'APPROVED')
-        AS total_approved_modules,
-    (SELECT COALESCE(ROUND(AVG(readiness_percentage), 2), 0)
-     FROM view_student_individual_readiness)
-        AS general_student_readiness_avg;
-
-
--- ============================================================
--- §5  FUNCTIONS
--- ============================================================
-
-CREATE OR REPLACE FUNCTION verify_user_login(
-    p_email        VARCHAR,
-    p_raw_password VARCHAR
-)
-RETURNS TABLE (
-    user_id    UUID,
-    first_name VARCHAR,
-    last_name  VARCHAR,
-    role_id    UUID,
-    status     VARCHAR
-) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT u.id, u.first_name, u.last_name, u.role_id, u.status
-    FROM   users u
-    WHERE  LOWER(u.email) = LOWER(p_email)
-      AND  u.password = crypt(p_raw_password, u.password)
-      AND  u.status = 'ACTIVE';
-END;
-$$ LANGUAGE plpgsql;
-
-
--- ============================================================
--- §6  ROLE-PERMISSION BACKFILLS
--- ============================================================
-
--- Replace legacy 'manage_whitelist' with granular permissions
-UPDATE roles
-SET permissions = permissions
-    || '["view_whitelist","add_whitelist","edit_whitelist","delete_whitelist","cross_check_whitelist","students_whitelist_only"]'::jsonb
-WHERE permissions @> '"manage_whitelist"'
-  AND NOT (permissions @> '"view_whitelist"');
-
--- Ensure FACULTY and STUDENT have can_signup
-UPDATE roles
-SET permissions = permissions || '["can_signup"]'::jsonb
-WHERE name IN ('FACULTY','STUDENT')
-  AND NOT (permissions @> '"can_signup"'::jsonb);
-
--- Ensure ADMIN has all four TOS permissions
-UPDATE roles
-SET permissions = permissions
-    || '["view_tos","create_tos","edit_tos","delete_tos"]'::jsonb
-WHERE name = 'ADMIN'
-  AND NOT (permissions @> '"view_tos"'::jsonb);
-
--- Ensure FACULTY has view_student_analytics (pairs with view_analytics)
-UPDATE roles
-SET permissions = permissions || '["view_student_analytics"]'::jsonb
-WHERE name = 'FACULTY'
-  AND (permissions @> '"view_analytics"'::jsonb)
-  AND NOT (permissions @> '"view_student_analytics"'::jsonb);
-
--- Ensure FACULTY and ADMIN have view_announcements
-UPDATE roles
-SET permissions = permissions || '["view_announcements"]'::jsonb
-WHERE name IN ('FACULTY', 'ADMIN')
-  AND NOT (permissions @> '"view_announcements"'::jsonb);
-
-  -- ============================================================
--- patch_view_student_readiness_v2.sql
---
--- Updates view_student_individual_readiness to use the new
--- weighted readiness formula that includes MOCK_EXAM as the
--- primary readiness signal.
---
--- Weights (must match READINESS_WEIGHTS in analytics.py):
---   MOCK_EXAM          40%  ← strongest board predictor
---   FINAL_ASSESSMENT   30%
---   POST_ASSESSMENT    20%
---   QUIZ               10%
---   PRE_ASSESSMENT      0%  ← baseline only, excluded
---
--- Reality-check blend: if student has taken mock exams,
--- their latest mock avg blends into the score:
---   mock < computed  → 70% computed + 30% mock
---   mock >= computed → 80% computed + 20% mock
---
--- Safe to re-run (CREATE OR REPLACE).
--- ============================================================
-
-CREATE OR REPLACE VIEW view_student_individual_readiness AS
-WITH
-approved_subjects AS (
-    SELECT id, name FROM subjects WHERE status = 'APPROVED'
+    SELECT s.id, s.name
+    FROM   subjects s
+    WHERE  s.status = 'APPROVED'
+      AND  s.name IN (SELECT name FROM active_subject_names)
 ),
 total_approved AS (
     SELECT COUNT(*) AS cnt FROM approved_subjects
@@ -655,7 +533,6 @@ type_avgs AS (
     GROUP  BY user_id, subject_id, type
 ),
 -- Step 2: weighted score per user × subject
---   Weights: MOCK_EXAM=0.40, FINAL_ASSESSMENT=0.30, POST_ASSESSMENT=0.20, QUIZ=0.10
 subject_weighted AS (
     SELECT
         user_id,
@@ -761,21 +638,98 @@ SELECT ROUND(AVG(readiness_percentage), 2) AS overall_system_readiness
 FROM   view_student_individual_readiness
 WHERE  readiness_percentage IS NOT NULL;
 
+
+CREATE OR REPLACE VIEW view_admin_dashboard_stats AS
+SELECT
+    (SELECT maintenance_mode FROM system_settings WHERE id = 1)
+        AS is_maintenance_mode,
+    (SELECT COUNT(u.id)
+     FROM users u INNER JOIN roles r ON u.role_id = r.id
+     WHERE r.name ILIKE 'student' AND u.status = 'ACTIVE')
+        AS total_active_students,
+    (SELECT COUNT(id) FROM subjects WHERE status = 'APPROVED')
+        AS total_approved_subjects,
+    (SELECT COUNT(id) FROM modules WHERE status = 'APPROVED')
+        AS total_approved_modules,
+    (SELECT COALESCE(ROUND(AVG(readiness_percentage), 2), 0)
+     FROM view_student_individual_readiness)
+        AS general_student_readiness_avg;
+
+
 -- ============================================================
--- add_notification_reads.sql
---
--- Tracks per-student read status for announcements.
--- Used by the mobile /notifications endpoint to compute
--- unread counts and mark individual notifications as read.
+-- §5  FUNCTIONS
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS notification_reads (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    announcement_id   UUID NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
-    read_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id, announcement_id)
-);
+CREATE OR REPLACE FUNCTION verify_user_login(
+    p_email        VARCHAR,
+    p_raw_password VARCHAR
+)
+RETURNS TABLE (
+    user_id    UUID,
+    first_name VARCHAR,
+    last_name  VARCHAR,
+    role_id    UUID,
+    status     VARCHAR
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT u.id, u.first_name, u.last_name, u.role_id, u.status
+    FROM   users u
+    WHERE  LOWER(u.email) = LOWER(p_email)
+      AND  u.password = crypt(p_raw_password, u.password)
+      AND  u.status = 'ACTIVE';
+END;
+$$ LANGUAGE plpgsql;
 
-CREATE INDEX IF NOT EXISTS idx_notification_reads_user ON notification_reads(user_id);
-CREATE INDEX IF NOT EXISTS idx_notification_reads_announcement ON notification_reads(announcement_id);
+
+-- ============================================================
+-- §6  ROLE-PERMISSION BACKFILLS  (idempotent UPDATEs)
+-- ============================================================
+
+-- Replace legacy 'manage_whitelist' with granular permissions
+UPDATE roles
+SET permissions = permissions
+    || '["view_whitelist","add_whitelist","edit_whitelist","delete_whitelist","cross_check_whitelist","students_whitelist_only"]'::jsonb
+WHERE permissions @> '"manage_whitelist"'
+  AND NOT (permissions @> '"view_whitelist"');
+
+-- Ensure FACULTY and STUDENT have can_signup
+UPDATE roles
+SET permissions = permissions || '["can_signup"]'::jsonb
+WHERE name IN ('FACULTY','STUDENT')
+  AND NOT (permissions @> '"can_signup"'::jsonb);
+
+-- Ensure ADMIN has all four TOS permissions
+UPDATE roles
+SET permissions = permissions
+    || '["view_tos","create_tos","edit_tos","delete_tos"]'::jsonb
+WHERE name = 'ADMIN'
+  AND NOT (permissions @> '"view_tos"'::jsonb);
+
+-- Ensure FACULTY has view_student_analytics (pairs with view_analytics)
+UPDATE roles
+SET permissions = permissions || '["view_student_analytics"]'::jsonb
+WHERE name = 'FACULTY'
+  AND (permissions @> '"view_analytics"'::jsonb)
+  AND NOT (permissions @> '"view_student_analytics"'::jsonb);
+
+-- Ensure FACULTY and ADMIN have view_announcements
+UPDATE roles
+SET permissions = permissions || '["view_announcements"]'::jsonb
+WHERE name IN ('FACULTY', 'ADMIN')
+  AND NOT (permissions @> '"view_announcements"'::jsonb);
+
+-- Ensure STUDENT has all session permissions
+UPDATE roles
+SET permissions = permissions
+    || '["mobile_add_session","mobile_edit_session","mobile_delete_session"]'::jsonb
+WHERE name = 'STUDENT'
+  AND NOT (permissions @> '"mobile_add_session"'::jsonb);
+
+-- If mobile_add_session already exists but edit/delete are missing, add just those
+UPDATE roles
+SET permissions = permissions
+    || '["mobile_edit_session","mobile_delete_session"]'::jsonb
+WHERE name = 'STUDENT'
+  AND (permissions @> '"mobile_add_session"'::jsonb)
+  AND NOT (permissions @> '"mobile_edit_session"'::jsonb);
