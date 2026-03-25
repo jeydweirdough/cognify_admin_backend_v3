@@ -12,18 +12,19 @@ Whitelist routes — manages the pre-registration whitelist table.
   FACULTY → /api/web/faculty/whitelist (STUDENT role only)
 """
 import csv, io, json
-from fastapi import APIRouter, Request
-from app.db import fetchone, execute, execute_returning, paginate
+from fastapi import APIRouter, Request, BackgroundTasks
+from app.db import fetchall, fetchone, execute, execute_returning, paginate
 from app.middleware.auth import permission_required
 from app.utils.responses import ok, created, no_content, error, not_found, conflict, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import validate_email, require_fields, clean_str
 from app.utils.log import log_action
+from app.utils.email import queue_email
 
 admin_whitelist_router   = APIRouter(prefix="/api/web/admin/whitelist",   tags=["admin-whitelist"])
 faculty_whitelist_router = APIRouter(prefix="/api/web/faculty/whitelist", tags=["faculty-whitelist"])
 
-VALID_ROLES    = {"ADMIN", "FACULTY", "STUDENT"}
+VALID_ROLES    = {"FACULTY", "STUDENT"}
 VALID_STATUSES = {"PENDING", "REGISTERED"}
 
 
@@ -34,7 +35,7 @@ def _fmt_wl(e: dict) -> dict:
     e["studentNumber"] = e.get("institutional_id")
     e["dateAdded"]     = e["date_added"].isoformat() if e.get("date_added") else None
     if e.get("added_by"): e["added_by"] = str(e["added_by"])
-    e["yearLevel"]     = e.get("year_level") # Provide camelCase for frontend consistency
+    e["yearLevel"]     = e.get("year_level") # Return year level to frontend
     return e
 
 
@@ -79,8 +80,8 @@ def _list_whitelist(request: Request, role_lock: str = None):
     return paginate(" ".join(sql), params, page, per_page)
 
 
-def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str = None):
-    """Insert a new entry into the whitelist table.  Does NOT create a user account."""
+def _add_entry(body: dict, background_tasks: BackgroundTasks, role_lock: str = None, added_by: str = None, ip: str = None):
+    """Insert a new entry into the whitelist table and dispatch email."""
     required = ["first_name", "last_name", "institutional_id", "email"]
     if not role_lock:
         required.append("role")
@@ -96,13 +97,11 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
     if role not in VALID_ROLES:
         return error(f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
 
-    # Duplicate checks in the whitelist table itself
     if fetchone("SELECT id FROM whitelist WHERE LOWER(email) = %s", [email]):
         return conflict("Email is already in the whitelist")
     if fetchone("SELECT id FROM whitelist WHERE LOWER(institutional_id) = LOWER(%s)", [clean_str(body["institutional_id"])]):
         return conflict("Institutional ID is already in the whitelist")
 
-    # Block re-whitelisting someone who already has an active account
     if fetchone("SELECT id FROM users WHERE LOWER(email) = %s AND status != 'REMOVED'", [email]):
         return conflict("A registered account already exists with this email")
 
@@ -119,11 +118,28 @@ def _add_entry(body: dict, role_lock: str = None, added_by: str = None, ip: str 
             email,
             role,
             added_by,
-            # Accept various key formats (snake_case, camelCase, or Space Separated)
             body.get("year_level") or body.get("yearLevel") or body.get("Year Level") or body.get("year level"),
         ],
     )
     log_action("Whitelist entry added", email, str(entry["id"]), user_id=added_by, ip=ip)
+
+    # ─── QUEUE EMAIL NOTIFICATION ───
+    html_body = f"""
+    <div style="font-family: Arial, sans-serif; color: #333;">
+        <h2>You've Been Whitelisted</h2>
+        <p>Hello {body.get('first_name')},</p>
+        <p>You have been officially whitelisted and authorized to create an account on the platform.</p>
+        <ul>
+            <li><strong>Name:</strong> {body.get('first_name')} {body.get('last_name')}</li>
+            <li><strong>Email:</strong> {email}</li>
+            <li><strong>Authorized Role:</strong> {role}</li>
+            <li><strong>Institutional ID:</strong> {clean_str(body['institutional_id'])}</li>
+        </ul>
+        <p>You may now proceed to the Sign Up page and register using this exact email address and Institutional ID.</p>
+    </div>
+    """
+    queue_email(background_tasks, email, "You are Authorized to Register", html_body)
+
     return created(_fmt_wl(entry))
 
 
@@ -193,7 +209,6 @@ async def admin_list(request: Request):
 
 @admin_whitelist_router.get("/{entry_id}")
 async def admin_get(request: Request, entry_id: str):
-    """Fetch a single whitelist entry by ID (used by the edit page)."""
     auth = permission_required("view_whitelist")(request)
     entry = fetchone("SELECT * FROM whitelist WHERE id = %s", [entry_id])
     if not entry:
@@ -202,17 +217,17 @@ async def admin_get(request: Request, entry_id: str):
 
 
 @admin_whitelist_router.post("")
-async def admin_add(request: Request):
+async def admin_add(request: Request, background_tasks: BackgroundTasks):
     auth = permission_required("add_whitelist")(request)
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _add_entry(body, added_by=auth.user_id, ip=auth.ip)
+    return _add_entry(body, background_tasks, added_by=auth.user_id, ip=auth.ip)
 
 
 @admin_whitelist_router.post("/bulk")
-async def admin_bulk(request: Request):
+async def admin_bulk(request: Request, background_tasks: BackgroundTasks):
     auth = permission_required("add_whitelist")(request)
 
     content_type = request.headers.get("content-type", "")
@@ -239,7 +254,7 @@ async def admin_bulk(request: Request):
 
     succeeded, failed = [], []
     for row in records:
-        result = _add_entry(row, added_by=auth.user_id, ip=auth.ip)
+        result = _add_entry(row, background_tasks, added_by=auth.user_id, ip=auth.ip)
         if hasattr(result, "body"):
             data = json.loads(result.body)
             if data.get("success"):
@@ -252,6 +267,32 @@ async def admin_bulk(request: Request):
     log_action("Bulk whitelist upload", f"{len(succeeded)} added, {len(failed)} failed",
                user_id=auth.user_id, ip=auth.ip)
     return ok({"added": len(succeeded), "failed": len(failed), "errors": failed})
+
+
+@admin_whitelist_router.post("/check-duplicates")
+async def admin_check_duplicates(request: Request):
+    auth = permission_required("add_whitelist")(request)
+    try: body = await request.json()
+    except Exception: return error("Invalid JSON", 400)
+    
+    emails = body.get("emails", [])
+    inst_ids = body.get("institutional_ids", [])
+    
+    dup_emails = []
+    dup_ids = []
+    
+    if emails:
+        placeholders = ",".join(["%s"] * len(emails))
+        rows = fetchall(f"SELECT email, institutional_id FROM whitelist WHERE email IN ({placeholders})", emails)
+        dup_emails = [r for r in rows]
+        
+    if inst_ids:
+        placeholders = ",".join(["%s"] * len(inst_ids))
+        rows = fetchall(f"SELECT email, institutional_id FROM whitelist WHERE institutional_id IN ({placeholders})", inst_ids)
+        dup_ids = [r for r in rows]
+        
+    all_dups = {r["institutional_id"]: r for r in dup_emails + dup_ids}.values()
+    return ok({"duplicates": list(all_dups)})
 
 
 @admin_whitelist_router.put("/{entry_id}")
@@ -281,18 +322,17 @@ async def faculty_list(request: Request):
 
 
 @faculty_whitelist_router.post("")
-async def faculty_add(request: Request):
+async def faculty_add(request: Request, background_tasks: BackgroundTasks):
     auth = permission_required("add_whitelist")(request)
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _add_entry(body, role_lock="STUDENT", added_by=auth.user_id, ip=auth.ip)
+    return _add_entry(body, background_tasks, role_lock="STUDENT", added_by=auth.user_id, ip=auth.ip)
 
 
 @faculty_whitelist_router.get("/{entry_id}")
 async def faculty_get(request: Request, entry_id: str):
-    """Fetch a single student whitelist entry by ID (used by the edit page)."""
     auth = permission_required("view_whitelist")(request)
     entry = fetchone("SELECT * FROM whitelist WHERE id = %s AND role = 'STUDENT'", [entry_id])
     if not entry:
@@ -324,3 +364,29 @@ async def faculty_delete(request: Request, entry_id: str):
     if existing["role"].upper() != "STUDENT":
         return forbidden("Faculty can only delete student entries")
     return _delete_entry(entry_id, auth)
+
+
+@faculty_whitelist_router.post("/check-duplicates")
+async def faculty_check_duplicates(request: Request):
+    auth = permission_required("add_whitelist")(request)
+    try: body = await request.json()
+    except Exception: return error("Invalid JSON", 400)
+    
+    emails = body.get("emails", [])
+    inst_ids = body.get("institutional_ids", [])
+    
+    dup_emails = []
+    dup_ids = []
+    
+    if emails:
+        placeholders = ",".join(["%s"] * len(emails))
+        rows = fetchall(f"SELECT email, institutional_id FROM whitelist WHERE email IN ({placeholders}) AND role = 'STUDENT'", emails)
+        dup_emails = [r for r in rows]
+        
+    if inst_ids:
+        placeholders = ",".join(["%s"] * len(inst_ids))
+        rows = fetchall(f"SELECT email, institutional_id FROM whitelist WHERE institutional_id IN ({placeholders}) AND role = 'STUDENT'", inst_ids)
+        dup_ids = [r for r in rows]
+        
+    all_dups = {r["institutional_id"]: r for r in dup_emails + dup_ids}.values()
+    return ok({"duplicates": list(all_dups)})

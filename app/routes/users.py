@@ -4,13 +4,14 @@ User management routes
   /api/web/faculty/users → read-only, filtered to students
 """
 import bcrypt
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, BackgroundTasks
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
 from app.middleware.auth import login_required, permission_required, AuthState
 from app.utils.responses import ok, created, no_content, error, not_found, conflict, forbidden
 from app.utils.pagination import get_page_params, get_search, get_filter
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
 from app.utils.log import log_action
+from app.utils.email import queue_email
 
 admin_users_router   = APIRouter(prefix="/api/web/admin/users",   tags=["admin-users"])
 faculty_users_router = APIRouter(prefix="/api/web/faculty/users", tags=["faculty-users"])
@@ -119,7 +120,7 @@ async def admin_get(request: Request, user_id: str):
 
 
 @admin_users_router.post("")
-async def admin_create(request: Request):
+async def admin_create(request: Request, background_tasks: BackgroundTasks):
     auth = permission_required("create_users")(request)
     try:
         body = await request.json()
@@ -167,6 +168,24 @@ async def admin_create(request: Request):
         ],
     )
     log_action("Created user", email, str(user["id"]), user_id=auth.user_id, ip=auth.ip)
+
+    # Queued Email for Manually Created User
+    html_body = f"""
+    <div style="font-family: Arial, sans-serif; color: #333;">
+        <h2>Account Created Successfully</h2>
+        <p>Hello {body.get('first_name')},</p>
+        <p>An administrator has manually created an account for you on the platform.</p>
+        <ul>
+            <li><strong>Name:</strong> {body.get('first_name')} {body.get('last_name')}</li>
+            <li><strong>Email:</strong> {email}</li>
+            <li><strong>Assigned Role:</strong> {body.get('role')}</li>
+            <li><strong>Institutional ID:</strong> {body.get('cvsu_id', 'N/A')}</li>
+        </ul>
+        <p><strong>Note:</strong> Please contact your administrator to securely receive your temporary password, or use the "Forgot Password" feature if available.</p>
+    </div>
+    """
+    queue_email(background_tasks, email, "Your Account Has Been Created", html_body)
+
     return created(_fmt(user))
 
 
@@ -183,8 +202,7 @@ async def admin_update(request: Request, user_id: str):
 
 
 @admin_users_router.patch("/{user_id}/status")
-async def admin_update_status(request: Request, user_id: str):
-    # Approving a PENDING signup requires approve_users; other status changes require edit_users
+async def admin_update_status(request: Request, user_id: str, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
     except Exception:
@@ -193,22 +211,30 @@ async def admin_update_status(request: Request, user_id: str):
     if new_status not in VALID_STATUSES:
         return error(f"status must be one of: {', '.join(VALID_STATUSES)}")
 
-    existing = fetchone("SELECT id, email, status FROM users WHERE id = %s", [user_id])
+    existing = fetchone("SELECT id, email, first_name, status FROM users WHERE id = %s", [user_id])
     if not existing: return not_found()
 
-    # All status changes (including PENDING → ACTIVE approval) use edit_users.
-    # There is no separate approve_users permission in permissions.ts.
     required_perm = "edit_users"
     auth = permission_required(required_perm)(request)
 
     execute("UPDATE users SET status = %s WHERE id = %s", [new_status, user_id])
 
-    # When a PENDING account is approved, record who approved it and when
     if existing["status"] == "PENDING" and new_status == "ACTIVE":
         execute(
             "UPDATE users SET approved_by = %s, approved_at = NOW() WHERE id = %s",
             [auth.user_id, user_id],
         )
+
+        # Queued Email for Approved User
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Account Approved!</h2>
+            <p>Hello {existing['first_name']},</p>
+            <p>Great news! Your registration request has been <strong>APPROVED</strong> by an administrator.</p>
+            <p>You can now log in to the platform using your email (<strong>{existing['email']}</strong>) and the password you created during sign-up.</p>
+        </div>
+        """
+        queue_email(background_tasks, existing['email'], "Your Account has been Approved", html_body)
 
     log_action(f"User status changed to {new_status}", existing["email"], user_id, user_id=auth.user_id, ip=auth.ip)
     return ok({"id": user_id, "status": new_status})
@@ -249,8 +275,6 @@ async def faculty_get(request: Request, user_id: str):
 
 
 def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
-    print("Request Content: ", body)
-    
     email = (body.get("email") or existing["email"]).strip().lower()
     if email != existing["email"].lower():
         if not validate_email(email):
@@ -271,7 +295,6 @@ def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
         if pw_err:
             return error(pw_err)
         password = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
-    updated = ''
     try:
         updated = execute_returning(
             """UPDATE users

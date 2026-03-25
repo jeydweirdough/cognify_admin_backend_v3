@@ -4,7 +4,7 @@ Auth routes — shared logic, two routers:
   /api/mobile/auth → mobile_auth_router (STUDENT only)
 """
 import bcrypt
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
 from app.db import fetchone, fetchall, execute, execute_returning
 from app.middleware.auth import (
@@ -17,6 +17,7 @@ from app.middleware.auth import (
 from app.utils.responses import accout_removed, ok, error, unauthorized, created, not_found
 from app.utils.validators import validate_email, validate_password, require_fields, clean_str
 from app.utils.log import log_action
+from app.utils.email import queue_email
 
 web_auth_router    = APIRouter(prefix="/api/web/auth",    tags=["web-auth"])
 mobile_auth_router = APIRouter(prefix="/api/mobile/auth", tags=["mobile-auth"])
@@ -71,9 +72,6 @@ def _do_login(user, allowed_roles: list[str]):
         )
 
     # ── Permission-based login gate ──────────────────────────────────────────
-    # Check that the role actually has the required login permission.
-    # web_login  → required for /api/web/auth/login  (ADMIN + FACULTY)
-    # mobile_login → required for /api/mobile/auth/login (STUDENT)
     required_perm = "mobile_login" if "STUDENT" in allowed_roles else "web_login"
     role_row = fetchone("SELECT permissions FROM roles WHERE name = %s", [user["role"]])
     if role_row:
@@ -97,7 +95,6 @@ def _do_login(user, allowed_roles: list[str]):
 def _build_login_response(user):
     execute("UPDATE users SET last_login = NOW() WHERE id = %s", [user["id"]])
     
-    # Fetch permissions from the user's role
     role_row = fetchone("SELECT permissions FROM roles WHERE name = %s", [user["role"]])
     permissions = role_row.get("permissions") or [] if role_row else []
     
@@ -117,12 +114,7 @@ def _build_login_response(user):
     return response
 
 
-def _register(body: dict, expected_role: str):
-    """
-    Registration (mobile):
-      1. If email+cvsu_id match a PENDING whitelist entry → create user ACTIVE.
-      2. Otherwise → create user as PENDING (admin must approve).
-    """
+def _register(body: dict, expected_role: str, background_tasks: BackgroundTasks):
     required = ["cvsu_id", "first_name", "last_name", "email", "password"]
     missing = require_fields(body, required)
     if missing:
@@ -138,16 +130,13 @@ def _register(body: dict, expected_role: str):
 
     hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
 
-    # ── Guard: duplicate account ───────────────────────────────────────────────
     if fetchone("SELECT id FROM users WHERE LOWER(email) = %s AND status != 'REMOVED'", [email]):
         return error("An account with this email is already registered. Please log in.", 409)
 
-    # ── Resolve role_id ────────────────────────────────────────────────────────
     role_row = fetchone("SELECT id FROM roles WHERE name = %s", [expected_role])
     if not role_row:
         return error("Role configuration error. Contact admin.", 500)
 
-    # ── Check whitelist ────────────────────────────────────────────────────────
     wl_entry = fetchone(
         """SELECT * FROM whitelist
            WHERE LOWER(email) = %s
@@ -156,7 +145,6 @@ def _register(body: dict, expected_role: str):
     )
 
     if wl_entry:
-        # Pre-approved via whitelist → create as ACTIVE (regardless of current status)
         user = execute_returning(
             """INSERT INTO users
                    (cvsu_id, first_name, middle_name, last_name,
@@ -174,22 +162,32 @@ def _register(body: dict, expected_role: str):
                 str(wl_entry["added_by"]) if wl_entry.get("added_by") else None,
             ],
         )
-        # Sync whitelist entry with names the student actually submitted, then mark registered
         execute(
             """UPDATE whitelist
                SET first_name = %s, middle_name = %s, last_name = %s, status = 'REGISTERED'
                WHERE id = %s""",
-            [
-                clean_str(body["first_name"]),
-                clean_str(body.get("middle_name")),
-                clean_str(body["last_name"]),
-                wl_entry["id"],
-            ],
+            [clean_str(body["first_name"]), clean_str(body.get("middle_name")), clean_str(body["last_name"]), wl_entry["id"]],
         )
         execute("UPDATE users SET last_login = NOW() WHERE id = %s", [user["id"]])
         log_action(f"{expected_role} registered via whitelist", email, str(user["id"]))
 
-        # Generate tokens so the mobile client can auto-login immediately
+        # Queued Email for Activated Registration
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Registration Successful</h2>
+            <p>Hello {body.get('first_name')},</p>
+            <p>Your registration is complete! Because you were pre-authorized, your account is immediately <strong>ACTIVE</strong>.</p>
+            <ul>
+                <li><strong>Name:</strong> {body.get('first_name')} {body.get('last_name')}</li>
+                <li><strong>Email:</strong> {email}</li>
+                <li><strong>Role:</strong> {expected_role}</li>
+                <li><strong>Institutional ID:</strong> {body.get('cvsu_id', 'N/A')}</li>
+            </ul>
+            <p>You can now log in using your registered email and password.</p>
+        </div>
+        """
+        queue_email(background_tasks, email, "Registration Complete", html_body)
+
         access_token  = make_access_token(str(user["id"]), expected_role)
         refresh_token = make_refresh_token(str(user["id"]))
         perm_row = fetchone("SELECT permissions FROM roles WHERE name = %s", [expected_role])
@@ -211,7 +209,6 @@ def _register(body: dict, expected_role: str):
             "Account created successfully.",
         )
     else:
-        # Not in whitelist → create as PENDING, admin must approve
         user = execute_returning(
             """INSERT INTO users
                    (cvsu_id, first_name, middle_name, last_name,
@@ -229,6 +226,24 @@ def _register(body: dict, expected_role: str):
             ],
         )
         log_action(f"{expected_role} self-registered (pending approval)", email, str(user["id"]))
+
+        # Queued Email for Pending Registration
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Registration Pending Approval</h2>
+            <p>Hello {body.get('first_name')},</p>
+            <p>Your registration request was received and is currently <strong>PENDING</strong> administrator approval.</p>
+            <ul>
+                <li><strong>Name:</strong> {body.get('first_name')} {body.get('last_name')}</li>
+                <li><strong>Email:</strong> {email}</li>
+                <li><strong>Role Requested:</strong> {expected_role}</li>
+                <li><strong>Institutional ID:</strong> {body.get('cvsu_id', 'N/A')}</li>
+            </ul>
+            <p>You will receive another email once your account has been reviewed and activated.</p>
+        </div>
+        """
+        queue_email(background_tasks, email, "Registration Pending Approval", html_body)
+
         return created(
             {"id": str(user["id"]), "email": user["email"], "status": "PENDING"},
             "Your account has been submitted for review. An administrator will approve it shortly.",
@@ -261,12 +276,12 @@ async def web_login(request: Request):
 
 
 @web_auth_router.post("/register")
-async def web_register(request: Request):
+async def web_register(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _register(body, "FACULTY")
+    return _register(body, "FACULTY", background_tasks)
 
 
 @web_auth_router.post("/logout")
@@ -305,9 +320,6 @@ async def mobile_login(request: Request):
     user = _fetch_user_by_email(body["email"])
     if not user:
         return unauthorized("Invalid credentials")
-    print("Fetched user for web login:", user)  # Debug log
-    print("Provided password (raw):", body["password"])  # Debug log
-    print("Stored password hash:", user["password"])  # Debug log
     if not bcrypt.checkpw(body["password"].encode(), user["password"].encode()):
         return unauthorized("Invalid credentials")
 
@@ -315,9 +327,6 @@ async def mobile_login(request: Request):
     if err:
         return err
 
-    # Mobile login returns tokens in the response body ONLY — no cookies.
-    # React Native cannot reliably use HttpOnly cookies across origins.
-    # The app stores tokens in AsyncStorage and sends Authorization: Bearer <token>.
     execute("UPDATE users SET last_login = NOW() WHERE id = %s", [user["id"]])
     access_token  = make_access_token(str(user["id"]), user["role"])
     refresh_token = make_refresh_token(str(user["id"]))
@@ -335,7 +344,6 @@ async def mobile_login(request: Request):
         "permissions": perms,
         "photo_avatar": user.get("photo_avatar"),
     }
-    # No Set-Cookie headers — mobile stores tokens in AsyncStorage only.
     log_action("Mobile login", user["email"], str(user["id"]), user_id=str(user["id"]))
     return JSONResponse({
         "success": True,
@@ -348,20 +356,16 @@ async def mobile_login(request: Request):
 
 
 @mobile_auth_router.post("/register")
-async def mobile_register(request: Request):
+async def mobile_register(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return _register(body, "STUDENT")
+    return _register(body, "STUDENT", background_tasks)
 
 
 @mobile_auth_router.post("/logout")
 async def mobile_logout(request: Request):
-    """
-    Mobile logout is stateless — the client discards tokens from AsyncStorage.
-    No cookies to clear. Optionally logs the action if a valid token is present.
-    """
     try:
         from app.middleware.auth import get_auth as _get_auth
         auth = _get_auth(request)
@@ -374,10 +378,6 @@ async def mobile_logout(request: Request):
 
 @mobile_auth_router.post("/refresh")
 async def mobile_refresh(request: Request):
-    """
-    Mobile token refresh — refresh_token is supplied in the request body
-    (NOT a cookie) and a new access_token is returned in the response body.
-    """
     return await _mobile_refresh_token(request)
 
 
@@ -389,15 +389,6 @@ async def mobile_me(request: Request):
 
 @web_auth_router.get("/signup-roles")
 async def get_signup_roles(request: Request):
-    """
-    Returns roles that have `can_signup` in their permissions.
-    Used by the frontend Sign Up form to show which roles are eligible.
-    """
-    rows = fetchall(
-        "SELECT id, name FROM roles WHERE permissions @> '\"can_signup\"'::jsonb AND is_system = FALSE OR name = 'FACULTY'",
-        []
-    )
-    # Re-query cleanly
     rows = fetchall(
         "SELECT id, name FROM roles WHERE permissions @> '\"can_signup\"'::jsonb",
         []
@@ -406,16 +397,7 @@ async def get_signup_roles(request: Request):
 
 
 @web_auth_router.post("/signup")
-async def web_signup(request: Request):
-    """
-    Self-registration for web (FACULTY / any role with can_signup).
-
-    Flow:
-      1. Validate required fields.
-      2. Role must exist and have `can_signup` in its permissions.
-      3. If email+cvsu_id match a PENDING whitelist entry → create user as ACTIVE.
-      4. Otherwise → create user as PENDING (admin must approve before login).
-    """
+async def web_signup(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
     except Exception:
@@ -438,11 +420,7 @@ async def web_signup(request: Request):
 
     role_name = body["role"].strip().upper()
 
-    # Role must exist and allow self-signup
-    role_row = fetchone(
-        "SELECT id, name, permissions FROM roles WHERE name = %s",
-        [role_name],
-    )
+    role_row = fetchone("SELECT id, name, permissions FROM roles WHERE name = %s", [role_name])
     if not role_row:
         return error("Invalid role selected.", 400)
 
@@ -452,11 +430,9 @@ async def web_signup(request: Request):
     if "can_signup" not in (perms or []):
         return error("Self-registration is not enabled for this role. Please contact your administrator.", 403)
 
-    # Duplicate account guard
     if fetchone("SELECT id FROM users WHERE LOWER(email) = %s AND status != 'REMOVED'", [email]):
         return error("An account with this email already exists. Please log in.", 409)
 
-    # ── Check whitelist ────────────────────────────────────────────────────────
     wl_entry = fetchone(
         """SELECT * FROM whitelist
            WHERE LOWER(email) = %s
@@ -469,7 +445,6 @@ async def web_signup(request: Request):
     hashed = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
 
     if wl_entry:
-        # Pre-approved via whitelist → create as ACTIVE
         user = execute_returning(
             """INSERT INTO users
                    (cvsu_id, first_name, middle_name, last_name,
@@ -492,12 +467,29 @@ async def web_signup(request: Request):
         )
         execute("UPDATE whitelist SET status = 'REGISTERED' WHERE id = %s", [wl_entry["id"]])
         log_action("User registered via whitelist", email, str(user["id"]))
+
+        # Queued Email for Activated Web Registration
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Registration Successful</h2>
+            <p>Hello {body.get('first_name')},</p>
+            <p>Your registration is complete! Because you were pre-authorized, your account is immediately <strong>ACTIVE</strong>.</p>
+            <ul>
+                <li><strong>Name:</strong> {body.get('first_name')} {body.get('last_name')}</li>
+                <li><strong>Email:</strong> {email}</li>
+                <li><strong>Role:</strong> {role_name}</li>
+                <li><strong>Institutional ID:</strong> {body.get('cvsu_id', 'N/A')}</li>
+            </ul>
+            <p>You can now log in using your registered email and password.</p>
+        </div>
+        """
+        queue_email(background_tasks, email, "Registration Complete", html_body)
+
         return created(
             {"id": str(user["id"]), "email": email, "status": "ACTIVE"},
             "Account created successfully. You can now log in.",
         )
     else:
-        # Not in whitelist → create as PENDING, admin must approve
         user = execute_returning(
             """INSERT INTO users
                    (cvsu_id, first_name, middle_name, last_name,
@@ -518,6 +510,24 @@ async def web_signup(request: Request):
             ],
         )
         log_action("User self-registered (pending approval)", email, str(user["id"]))
+
+        # Queued Email for Pending Web Registration
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Registration Pending Approval</h2>
+            <p>Hello {body.get('first_name')},</p>
+            <p>Your registration request was received and is currently <strong>PENDING</strong> administrator approval.</p>
+            <ul>
+                <li><strong>Name:</strong> {body.get('first_name')} {body.get('last_name')}</li>
+                <li><strong>Email:</strong> {email}</li>
+                <li><strong>Role Requested:</strong> {role_name}</li>
+                <li><strong>Institutional ID:</strong> {body.get('cvsu_id', 'N/A')}</li>
+            </ul>
+            <p>You will receive another email once your account has been reviewed and activated.</p>
+        </div>
+        """
+        queue_email(background_tasks, email, "Registration Pending Approval", html_body)
+
         return created(
             {"id": str(user["id"]), "email": email, "status": "PENDING"},
             "Your account has been submitted for review. An administrator will approve it shortly.",
@@ -525,22 +535,11 @@ async def web_signup(request: Request):
 
 
 async def web_sync_permissions(request: Request):
-    """
-    Re-fetches the authenticated user's current role + permissions from the DB.
-    Called by the frontend after any role permission update so active sessions
-    pick up the change immediately — no logout/login required.
-    """
     auth = login_required(request)
     return _me(auth)
 
 
-# ── Auth helpers — web (cookie-based) ─────────────────────────────────────────
-
 def _refresh_token(request: Request):
-    """
-    Web token refresh: reads the refresh_token HttpOnly cookie and issues a new
-    access_token cookie. Web-only — mobile uses _mobile_refresh_token instead.
-    """
     token = request.cookies.get(COOKIE_REFRESH)
     if not token:
         return unauthorized("No refresh token")
@@ -568,7 +567,6 @@ def _refresh_token(request: Request):
 
 
 def _me(auth: AuthState):
-    """Web /me — returns user + permissions. Role cookie is managed by the browser."""
     user = fetchone(
         """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
@@ -583,20 +581,12 @@ def _me(auth: AuthState):
     return ok(user)
 
 
-# ── Auth helpers — mobile (Bearer token / AsyncStorage) ───────────────────────
-
 async def _mobile_refresh_token(request: Request):
-    """
-    Mobile token refresh: reads refresh_token from the JSON request body
-    (mobile stores it in AsyncStorage, not a cookie) and returns a new
-    access_token + refresh_token in the response body.
-    """
     try:
         body = await request.json()
     except Exception:
         body = {}
 
-    # Mobile sends refresh_token in the body; fall back to cookie for dev convenience
     token = body.get("refresh_token") or request.cookies.get(COOKIE_REFRESH)
     if not token:
         return unauthorized("No refresh token provided")
@@ -612,7 +602,6 @@ async def _mobile_refresh_token(request: Request):
     if not user or user["status"] == "REMOVED":
         return unauthorized("User not found or removed")
 
-    # Rotate both tokens so each refresh invalidates the old pair
     new_access  = make_access_token(str(user["id"]), user["role"])
     new_refresh = make_refresh_token(str(user["id"]))
 
@@ -626,10 +615,6 @@ async def _mobile_refresh_token(request: Request):
 
 
 def _me_mobile(auth: AuthState):
-    """
-    Mobile /me — returns user + full permissions array.
-    The mobile app caches this in AsyncStorage to avoid extra calls.
-    """
     user = fetchone(
         """SELECT u.id, u.cvsu_id, u.first_name, u.middle_name, u.last_name,
                   u.email, u.department, u.status, u.date_created, u.last_login,
@@ -641,7 +626,6 @@ def _me_mobile(auth: AuthState):
     if not user:
         return unauthorized("User not found")
     user["id"] = str(user["id"])
-    # Ensure permissions is always a list for the mobile client
     if user.get("permissions") is None:
         user["permissions"] = []
     return ok(user)
