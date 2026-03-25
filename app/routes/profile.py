@@ -3,13 +3,12 @@ Mobile student profile routes.
   PATCH /api/mobile/student/profile  — update own profile fields
   GET   /api/mobile/student/profile  — fetch own profile
 """
-import os
 from fastapi import APIRouter, Request
 from app.db import fetchone, execute_returning
 from app.middleware.auth import mobile_permission_required
 from app.utils.responses import ok, error, not_found
 from app.utils.validators import clean_str
-from app.utils.storage import upload_image_base64
+from app.utils.storage import validate_and_normalise_avatar
 
 mobile_profile_router = APIRouter(
     prefix="/api/mobile/student/profile",
@@ -28,11 +27,16 @@ UPDATABLE_FIELDS = {
 }
 
 def get_preset_url(index: int) -> str | None:
+    """
+    Return the preset avatar identifier stored in the DB.
+    We store a simple token like "preset:a" rather than a Supabase URL so the
+    frontend/mobile app can resolve it to a local bundled asset, and we don't
+    consume any Supabase storage quota for static images.
+    """
     if index < 0 or index > 7:
         return None
     letters = ["a", "b", "c", "d", "e", "f", "g", "h"]
-    supabase_url = os.getenv("SUPABASE_URL", "https://gtmescrpcsowaikmvgvy.supabase.co").rstrip("/")
-    return f"{supabase_url}/storage/v1/object/public/avatars/{letters[index]}.png"
+    return f"preset:{letters[index]}"
 
 
 def _fmt_profile(u: dict) -> dict:
@@ -105,12 +109,13 @@ async def update_profile(request: Request):
         if field in body:
             value = body[field]
             
-            # Special handling for Base64 profile photo upload
+            # Avatar: store the base64 data URI (or preset token) directly in the DB.
+            # No Supabase bucket is needed — the column holds the full image data.
             if field == "photo_avatar" and isinstance(value, str) and value.startswith("data:image"):
                 try:
-                    value = upload_image_base64(value, "avatar.jpg", auth.user_id)
+                    value = validate_and_normalise_avatar(value)
                 except Exception as e:
-                    return error(f"Failed to upload profile photo: {str(e)}")
+                    return error(f"Invalid profile photo: {str(e)}")
             
             set_clauses.append(f"{col} = %s")
             params.append(transform(value) if value is not None else None)

@@ -737,3 +737,8 @@ WHERE name = 'STUDENT'
 ALTER TABLE users
   ADD COLUMN IF NOT EXISTS has_taken_diagnostic BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS readiness_score      NUMERIC(5,2);
+-- ─── Storage refactor: avatar stored as base64 in DB ──────────────────────────
+-- Widen photo_avatar to TEXT so it can hold a full base64 data URI (~2 MB max).
+-- Previously this may have been VARCHAR(255) or similar.
+ALTER TABLE users
+  ALTER COLUMN photo_avatar TYPE TEXT;
