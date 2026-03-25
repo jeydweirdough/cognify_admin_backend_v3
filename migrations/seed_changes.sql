@@ -36,7 +36,7 @@ INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
 (
   '00000000-0000-0000-0000-000000000001',
   'ADMIN',
-  '["view_admin_dashboard","view_subjects","create_subjects","edit_subjects","delete_subjects","view_content","create_content","edit_content","delete_content","view_verification","approve_verification","reject_verification","view_assessments","create_assessments","edit_assessments","delete_assessments","resolve_revisions","view_analytics","view_student_analytics","view_users","create_users","edit_users","delete_users","approve_users","view_students_nav","view_students","create_students","edit_students","delete_students","approve_pending_students","view_whitelist","add_whitelist","edit_whitelist","delete_whitelist","cross_check_whitelist","students_whitelist_only","view_roles","manage_roles","view_logs","view_settings","edit_settings","manage_backup","import_settings","view_tos","create_tos","edit_tos","delete_tos","web_login"]'::jsonb,
+  '["view_admin_dashboard","view_subjects","create_subjects","edit_subjects","delete_subjects","view_content","create_content","edit_content","delete_content","view_verification","approve_verification","reject_verification","view_assessments","create_assessments","edit_assessments","delete_assessments","resolve_revisions","view_analytics","view_student_analytics","view_users","create_users","edit_users","delete_users","approve_users","view_students_nav","view_students","create_students","edit_students","delete_students","approve_pending_students","view_whitelist","add_whitelist","edit_whitelist","delete_whitelist","cross_check_whitelist","students_whitelist_only","view_roles","manage_roles","view_logs","view_settings","edit_settings","manage_backup","import_settings","view_tos","create_tos","edit_tos","delete_tos","web_login","view_announcements","create_announcements","edit_announcements","delete_announcements"]'::jsonb,
   TRUE, NOW()
 ),
 
@@ -44,7 +44,7 @@ INSERT INTO roles (id, name, permissions, is_system, created_at) VALUES
 (
   '00000000-0000-0000-0000-000000000002',
   'FACULTY',
-  '["view_faculty_dashboard","view_subjects","create_subjects","edit_subjects","view_content","create_content","edit_content","view_verification","approve_verification","reject_verification","view_assessments","create_assessments","edit_assessments","view_analytics","view_student_analytics","view_students_nav","view_students","create_students","edit_students","view_whitelist","add_whitelist","edit_whitelist","cross_check_whitelist","students_whitelist_only","web_login","can_signup"]'::jsonb,
+  '["view_faculty_dashboard","view_subjects","create_subjects","edit_subjects","view_content","create_content","edit_content","view_verification","approve_verification","reject_verification","view_assessments","create_assessments","edit_assessments","view_analytics","view_student_analytics","view_students_nav","view_students","create_students","edit_students","view_whitelist","add_whitelist","edit_whitelist","cross_check_whitelist","students_whitelist_only","web_login","can_signup","view_announcements","create_announcements","edit_announcements","delete_announcements","view_tos","create_tos","edit_tos","delete_tos"]'::jsonb,
   TRUE, NOW()
 ),
 

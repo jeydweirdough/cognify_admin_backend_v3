@@ -8,6 +8,7 @@ from app.utils.responses import ok, created, no_content, error, not_found, forbi
 from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import require_fields, clean_str
 from app.utils.log import log_action
+from app.utils.storage import upload_pdf_bytes, delete_pdf_by_url, _slugify, DuplicateFileError
 import json
 from psycopg2.extras import Json as PgJson
 
@@ -20,18 +21,8 @@ mobile_subjects_router  = APIRouter(prefix="/api/mobile/student/subjects",    ta
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_active_tos_subjects() -> list[str] | None:
-    """
-    Fetch subject names from the currently ACTIVE TOS version.
-
-    Returns:
-      None        — no TOS version is currently set to ACTIVE (fallback: show all)
-      []          — TOS is ACTIVE but contains no subjects (show nothing)
-      ["name",…]  — TOS is ACTIVE with subjects (show only those)
-    """
     row = fetchone("SELECT data FROM tos_versions WHERE status = 'ACTIVE' LIMIT 1")
-    if not row:
-        # No active TOS at all — caller decides fallback behaviour
-        return None
+    if not row: return None
     data = row.get("data") or {}
     subjects_list = data.get("subjects") or []
     return [s["subject"] for s in subjects_list if s.get("subject")]
@@ -44,9 +35,7 @@ def _format_module(m: dict) -> dict:
     m["fileUrl"] = m.pop("file_url", None)
     m["fileName"] = m.pop("file_name", None)
     m["tos_section"] = m.get("tos_section")
-    # Ensure type defaults to MODULE for backwards compatibility
-    if not m.get("type"):
-        m["type"] = "MODULE"
+    if not m.get("type"): m["type"] = "MODULE"
     
     if m.get("format") == "PDF":
         m["fileData"] = m.pop("content", None)
@@ -56,20 +45,16 @@ def _format_module(m: dict) -> dict:
     return m
 
 def _build_module_tree(subject_id: str, parent_id=None, role: str = "ADMIN", user_id: str = None) -> list:
-    """Recursively builds the curriculum tree based on strict role conditionals."""
     sql = """SELECT t.*, u.first_name || ' ' || u.last_name AS created_by_name
              FROM modules t LEFT JOIN users u ON u.id = t.created_by
              WHERE t.subject_id = %s AND t.parent_id IS NOT DISTINCT FROM %s"""
     params = [subject_id, parent_id]
 
-    # Rule: Faculty see APPROVED + their own PENDING content
     if role == "FACULTY":
         sql += " AND (t.status = 'APPROVED' OR t.created_by = %s)"
         params.append(user_id)
-    # Rule: Students ONLY see APPROVED content
     elif role == "STUDENT":
         sql += " AND t.status = 'APPROVED'"
-    # Admin sees everything.
 
     sql += " ORDER BY t.sort_order, t.created_at"
     
@@ -90,7 +75,6 @@ def _get_subject_tree(subject_id: str, role: str = "ADMIN", user_id: str = None)
     )
     if not s: return None
     
-    # Rule: Faculty and Students can only view the tree if the subject is APPROVED
     if role in ["FACULTY", "STUDENT"] and s["status"] != "APPROVED":
         return None
     
@@ -107,7 +91,6 @@ def _list_subjects(request: Request, role: str):
     sql    = ["SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name FROM subjects s LEFT JOIN users u ON u.id = s.created_by WHERE 1=1"]
     params = []
     
-    # Rule: Non-admins only see live, approved subjects
     if role in ["FACULTY", "STUDENT"]:
         sql.append("AND s.status = 'APPROVED'")
         
@@ -118,7 +101,6 @@ def _list_subjects(request: Request, role: str):
     if active_tos_only:
         active_subjects = _get_active_tos_subjects()
         if active_subjects is None or len(active_subjects) == 0:
-            # No active TOS or active TOS has no subjects — return nothing
             sql.append("AND 1=0")
         else:
             placeholders = ",".join(["%s"] * len(active_subjects))
@@ -132,7 +114,6 @@ def _list_subjects(request: Request, role: str):
         s["id"] = str(s["id"])
         s["passingRate"] = s.pop("passing_rate", 75)
         
-        # Count modules and ebooks conditionally as well
         if role == "ADMIN":
             cnt_mod = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'MODULE'", [s["id"]])
             cnt_ebook = fetchone("SELECT COUNT(*) AS c FROM modules WHERE subject_id = %s AND type = 'E-BOOK'", [s["id"]])
@@ -178,28 +159,6 @@ async def admin_create(request: Request):
 
 @admin_subjects_router.post("/bulk/from-tos")
 async def admin_bulk_create_from_tos(request: Request):
-    """
-    Create subjects in bulk from TOS extracted data.
-    
-    Accepts:
-    {
-      "subjects": [
-        {
-          "subject": "Subject Name",
-          "weight": "20%",
-          "board": "Psychologist",
-          ...other TOS fields
-        }
-      ]
-    }
-    
-    Returns:
-    {
-      "created": [{ subject object }, ...],
-      "existing": [{ name: "...", reason: "..." }, ...],
-      "failed": [{ name: "...", reason: "..." }, ...]
-    }
-    """
     auth = permission_required("create_subjects")(request)
     try: body = await request.json()
     except Exception: body = {}
@@ -218,68 +177,33 @@ async def admin_bulk_create_from_tos(request: Request):
             failed.append({"name": "Unknown", "reason": "Missing subject name"})
             continue
         
-        # Check if subject with this name already exists
-        existing_subject = fetchone(
-            "SELECT id, name FROM subjects WHERE LOWER(name) = LOWER(%s)",
-            [subj_name]
-        )
-        
+        existing_subject = fetchone("SELECT id, name FROM subjects WHERE LOWER(name) = LOWER(%s)", [subj_name])
         if existing_subject:
-            existing.append({
-                "name": existing_subject["name"],
-                "reason": "Subject already exists"
-            })
+            existing.append({"name": existing_subject["name"], "reason": "Subject already exists"})
             continue
         
         try:
-            # Extract weight as percentage (e.g., "20%" -> 20)
             weight_str = str(tos_subj.get("weight", "0")).strip().rstrip("%")
-            try:
-                weight = int(float(weight_str))
-            except (ValueError, TypeError):
-                weight = 0
+            try: weight = int(float(weight_str))
+            except (ValueError, TypeError): weight = 0
             
-            # Create the subject
             new_subj = execute_returning(
                 """INSERT INTO subjects (name, description, color, weight, passing_rate, status, created_by)
                    VALUES (%s, %s, %s, %s, %s, 'APPROVED', %s) RETURNING *""",
-                [
-                    subj_name,
-                    clean_str(tos_subj.get("board", "")),  # Use board as description
-                    "#6366f1",  # Default color
-                    weight,
-                    75,  # Default passing rate
-                    auth.user_id
-                ]
+                [subj_name, clean_str(tos_subj.get("board", "")), "#6366f1", weight, 75, auth.user_id]
             )
             
-            log_action("Created subject from TOS", subj_name, str(new_subj["id"]), 
-                      user_id=auth.user_id, ip=auth.ip)
-            
-            # Return simplified subject object
+            log_action("Created subject from TOS", subj_name, str(new_subj["id"]), user_id=auth.user_id, ip=auth.ip)
             created.append({
-                "id": str(new_subj["id"]),
-                "name": new_subj["name"],
-                "weight": new_subj["weight"],
-                "description": new_subj["description"],
-                "color": new_subj["color"]
+                "id": str(new_subj["id"]), "name": new_subj["name"], "weight": new_subj["weight"],
+                "description": new_subj["description"], "color": new_subj["color"]
             })
         except Exception as e:
-            failed.append({
-                "name": subj_name,
-                "reason": str(e)
-            })
+            failed.append({"name": subj_name, "reason": str(e)})
     
     return ok({
-        "created": created,
-        "existing": existing,
-        "failed": failed,
-        "summary": {
-            "total": len(tos_subjects),
-            "created_count": len(created),
-            "existing_count": len(existing),
-            "failed_count": len(failed)
-        }
+        "created": created, "existing": existing, "failed": failed,
+        "summary": {"total": len(tos_subjects), "created_count": len(created), "existing_count": len(existing), "failed_count": len(failed)}
     })
 
 @admin_subjects_router.put("/{subject_id}")
@@ -305,6 +229,12 @@ async def admin_delete(request: Request, subject_id: str):
     auth = permission_required("delete_subjects")(request)
     s = fetchone("SELECT name FROM subjects WHERE id = %s", [subject_id])
     if not s: return not_found()
+    
+    # ─── ADDED: CLEANUP PDFs BEFORE DELETING SUBJECT ───
+    modules = fetchall("SELECT file_url FROM modules WHERE subject_id = %s AND format = 'PDF' AND file_url IS NOT NULL", [subject_id])
+    for m in modules:
+        delete_pdf_by_url(m["file_url"])
+
     execute("DELETE FROM subjects WHERE id = %s", [subject_id])
     log_action("Deleted subject", s["name"], subject_id, user_id=auth.user_id, ip=auth.ip)
     return ok()
@@ -326,6 +256,12 @@ async def admin_update_module(request: Request, subject_id: str, module_id: str)
 @admin_subjects_router.delete("/{subject_id}/modules/{module_id}")
 async def admin_delete_module(request: Request, subject_id: str, module_id: str):
     auth = permission_required("delete_content")(request)
+
+    # ─── ADDED: CLEANUP PDF BEFORE DELETING MODULE ───
+    m = fetchone("SELECT file_url, format FROM modules WHERE id = %s AND subject_id = %s", [module_id, subject_id])
+    if m and m.get("format") == "PDF" and m.get("file_url"):
+        delete_pdf_by_url(m["file_url"])
+
     execute("DELETE FROM modules WHERE id = %s AND subject_id = %s", [module_id, subject_id])
     return no_content()
 
@@ -362,10 +298,13 @@ async def faculty_update_module(request: Request, subject_id: str, module_id: st
 # SHARED TOPIC WRITE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SHARED TOPIC WRITE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
     subj = fetchone("SELECT id, name FROM subjects WHERE id = %s", [subject_id])
-    if not subj:
-        return not_found("Subject not found")
+    if not subj: return not_found("Subject not found")
     if require_fields(body, ["title"]): return error("Missing title")
 
     status = "APPROVED" if auto_approve else "PENDING"
@@ -373,31 +312,54 @@ def _add_module(subject_id: str, body: dict, auth, auto_approve: bool):
     file_url = body.get("fileUrl")
     content_payload = body.get("content")
     
+    # 1. Catch PDF Upload Errors
     if body.get("format") == "PDF" and body.get("fileData"):
-        from app.utils.storage import upload_pdf_base64
+        import base64 as _b64, re as _re
         try:
-            file_url = upload_pdf_base64(body["fileData"], body.get("fileName", "document.pdf"), subj["name"])
+            raw_b64 = body["fileData"].split(",", 1)[-1] if "," in body["fileData"] else body["fileData"]
+            pdf_bytes = _b64.b64decode(raw_b64)
+            safe_name = _re.sub(r"[^a-zA-Z0-9._-]", "_", body.get("fileName", "document.pdf"))
+            
+            # Map the subject name directly to the dynamic bucket name
+            file_url = upload_pdf_bytes(pdf_bytes, filename=safe_name, bucket_name=_slugify(subj["name"]))
             content_payload = None
+            
+        except DuplicateFileError as e:
+            # Send clean 409 Conflict error directly to frontend UI
+            return error(str(e), 409)
+            
         except Exception as e:
             import traceback
-            print(f"\\n--- SUPABASE UPLOAD ERROR ---")
+            print("\n=========================================")
+            print(f"[ERROR in _add_module - PDF Upload]")
             traceback.print_exc()
-            print(f"-----------------------------\\n")
+            print("=========================================\n")
             return error(f"Failed to upload PDF: {str(e)}", 500)
 
     module_type = body.get("type", "MODULE")
     if module_type not in ("MODULE", "E-BOOK"):
         module_type = "MODULE"
 
-    topic = execute_returning(
-        """INSERT INTO modules (subject_id, parent_id, title, description, content, type, format, file_url, file_name, tos_section, sort_order, status, created_by)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
-        [subject_id, body.get("parent_id"), clean_str(body["title"]), clean_str(body.get("description")), 
-         content_payload, module_type, body.get("format", "TEXT"), file_url, body.get("fileName"),
-         body.get("tos_section"), body.get("sort_order", 0), status, auth.user_id],
-    )
-    log_action("Added module", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
-    return created(_format_module(topic))
+    # 2. Catch Database Insertion Errors
+    try:
+        topic = execute_returning(
+            """INSERT INTO modules (subject_id, parent_id, title, description, content, type, format, file_url, file_name, tos_section, sort_order, status, created_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+            [subject_id, body.get("parent_id"), clean_str(body["title"]), clean_str(body.get("description")), 
+             content_payload, module_type, body.get("format", "TEXT"), file_url, body.get("fileName"),
+             body.get("tos_section"), body.get("sort_order", 0), status, auth.user_id],
+        )
+        log_action("Added module", topic["title"], str(topic["id"]), user_id=auth.user_id, ip=auth.ip)
+        return created(_format_module(topic))
+    except Exception as e:
+        import traceback
+        print("\n=========================================")
+        print(f"[ERROR in _add_module - DB Insert]")
+        print(f"Payload received: {body}")
+        traceback.print_exc()
+        print("=========================================\n")
+        return error(f"Database insertion failed: {str(e)}", 500)
+
 
 def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     existing = fetchone("SELECT * FROM modules WHERE id = %s", [module_id])
@@ -410,79 +372,93 @@ def _update_module(module_id: str, body: dict, auth, auto_approve: bool):
     content_payload = body.get("content", existing.get("content"))
     
     if body.get("format") == "PDF" and body.get("fileData"):
-        from app.utils.storage import upload_pdf_base64
+        import base64 as _b64, re as _re
         try:
-            file_url = upload_pdf_base64(
-                body["fileData"], 
-                body.get("fileName") or existing.get("file_name") or "document.pdf",
-                subj["name"]
-            )
+            raw_b64 = body["fileData"].split(",", 1)[-1] if "," in body["fileData"] else body["fileData"]
+            pdf_bytes = _b64.b64decode(raw_b64)
+            safe_name = _re.sub(r"[^a-zA-Z0-9._-]", "_", body.get("fileName") or existing.get("file_name") or "document.pdf")
+            
+            # Map the subject name directly to the dynamic bucket name
+            file_url = upload_pdf_bytes(pdf_bytes, filename=safe_name, bucket_name=_slugify(subj["name"]))
             content_payload = None
+            
+        except DuplicateFileError as e:
+            # Send clean 409 Conflict error directly to frontend UI
+            return error(str(e), 409)
+            
         except Exception as e:
             import traceback
-            print(f"\\n--- SUPABASE UPLOAD ERROR ---")
+            print("\n=========================================")
+            print(f"[ERROR in _update_module - PDF Upload]")
             traceback.print_exc()
-            print(f"-----------------------------\\n")
+            print("=========================================\n")
             return error(f"Failed to upload PDF: {str(e)}", 500)
     elif body.get("format") == "PDF":
         content_payload = existing.get("content")
 
-    if not auto_approve:
-        # FACULTY MODE: Intercept the update and push to staging table (request_changes)
-        payload = {
-            "action": "UPDATE_MODULE",
-            "title": clean_str(body.get("title", existing["title"])),
-            "description": clean_str(body.get("description", existing.get("description"))),
-            "content": content_payload,
-            "format": body.get("format", existing.get("format", "TEXT")),
-            "file_url": file_url,
-            "file_name": body.get("fileName", existing.get("file_name")),
-            "tos_section": body.get("tos_section", existing.get("tos_section")),
-            "sort_order": body.get("sort_order", existing["sort_order"])
-        }
-        
-        # Check if there's already a REVISION_REQUESTED or PENDING request for this module/user
-        existing_req = fetchone(
-            "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'MODULE' AND status IN ('PENDING', 'REVISION_REQUESTED')",
-            [module_id, auth.user_id]
+    try:
+        if not auto_approve:
+            # FACULTY MODE: Push to staging
+            payload = {
+                "action": "UPDATE_MODULE",
+                "title": clean_str(body.get("title", existing["title"])),
+                "description": clean_str(body.get("description", existing.get("description"))),
+                "content": content_payload,
+                "format": body.get("format", existing.get("format", "TEXT")),
+                "file_url": file_url,
+                "file_name": body.get("fileName", existing.get("file_name")),
+                "tos_section": body.get("tos_section", existing.get("tos_section")),
+                "sort_order": body.get("sort_order", existing["sort_order"])
+            }
+            
+            existing_req = fetchone(
+                "SELECT id FROM request_changes WHERE target_id = %s AND created_by = %s AND type = 'MODULE' AND status IN ('PENDING', 'REVISION_REQUESTED')",
+                [module_id, auth.user_id]
+            )
+            if existing_req:
+                execute("UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s", [PgJson(payload), str(existing_req["id"])])
+            else:
+                execute("INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'MODULE', %s, 'PENDING')", [module_id, auth.user_id, PgJson(payload)])
+            
+            execute("UPDATE modules SET status = 'PENDING' WHERE id = %s", [module_id])
+            log_action("Submitted module edit for review", payload["title"], module_id, user_id=auth.user_id, ip=auth.ip)
+            
+            formatted = _format_module(existing)
+            formatted["status"] = "PENDING_UPDATE"
+            return ok(formatted)
+
+        # ADMIN MODE: Auto-approve and write directly to live modules table
+        old_file_url = existing.get("file_url")
+        if old_file_url and existing.get("format") == "PDF":
+            new_format = body.get("format", existing.get("format", "TEXT"))
+            if new_format != "PDF" or file_url != old_file_url:
+                delete_pdf_by_url(old_file_url)
+
+        updated = execute_returning(
+            """UPDATE modules SET title = %s, description = %s, content = %s,
+                                  type = %s, format = %s, file_url = %s, file_name = %s,
+                                  tos_section = %s, sort_order = %s, status = 'APPROVED'
+               WHERE id = %s RETURNING *""",
+            [clean_str(body.get("title", existing["title"])), clean_str(body.get("description", existing.get("description"))),
+             content_payload, body.get("type", existing.get("type", "MODULE")),
+             body.get("format", existing.get("format", "TEXT")), file_url,
+             body.get("fileName", existing.get("file_name")), body.get("tos_section", existing.get("tos_section")), 
+             body.get("sort_order", existing["sort_order"]), module_id],
         )
         
-        if existing_req:
-            execute(
-                "UPDATE request_changes SET content = %s, status = 'PENDING' WHERE id = %s",
-                [PgJson(payload), str(existing_req["id"])]
-            )
-        else:
-            execute(
-                "INSERT INTO request_changes (target_id, created_by, type, content, status) VALUES (%s, %s, 'MODULE', %s, 'PENDING')",
-                [module_id, auth.user_id, PgJson(payload)]
-            )
-        
-        # Also update the live module status to PENDING so it reflects in the UI
-        execute("UPDATE modules SET status = 'PENDING' WHERE id = %s", [module_id])
-        
-        log_action("Submitted module edit for review", payload["title"], module_id, user_id=auth.user_id, ip=auth.ip)
-        
-        # Return the existing module so the UI doesn't crash, but flag it as pending review
-        formatted = _format_module(existing)
-        formatted["status"] = "PENDING_UPDATE"
+        formatted = _format_module(updated)
+        formatted["subTopics"] = _build_module_tree(str(updated["subject_id"]), formatted["id"], "ADMIN", auth.user_id)
         return ok(formatted)
+        
+    except Exception as e:
+        import traceback
+        print("\n=========================================")
+        print(f"[ERROR in _update_module - DB Execute]")
+        print(f"Payload received: {body}")
+        traceback.print_exc()
+        print("=========================================\n")
+        return error(f"Database execution failed: {str(e)}", 500)
 
-    # ADMIN MODE: Auto-approve and write directly to live modules table
-    updated = execute_returning(
-        """UPDATE modules SET title = %s, description = %s, content = %s,
-                              type = %s, format = %s, file_url = %s, file_name = %s,
-                              tos_section = %s, sort_order = %s, status = 'APPROVED'
-           WHERE id = %s RETURNING *""",
-        [clean_str(body.get("title", existing["title"])), clean_str(body.get("description", existing.get("description"))),
-         content_payload, body.get("type", existing.get("type", "MODULE")),
-         body.get("format", existing.get("format", "TEXT")), file_url,
-         body.get("fileName", existing.get("file_name")), body.get("tos_section", existing.get("tos_section")), 
-         body.get("sort_order", existing["sort_order"]), module_id],
-    )
-    
-    formatted = _format_module(updated)
-    formatted["subTopics"] = _build_module_tree(str(updated["subject_id"]), formatted["id"], "ADMIN", auth.user_id)
 
 # ─── Module lookup by ID (used by RevisionDetail to resolve subject) ──────────
 
@@ -503,17 +479,10 @@ async def resolve_module_subject_admin(request: Request, module_id: str):
 
 # ═══════════════════════════════════════════════════════════════
 # MOBILE — Student read-only subject & module access
-# All routes enforce mobile_login permission (STUDENT role only).
-# Students only see APPROVED content.
 # ═══════════════════════════════════════════════════════════════
 
 @mobile_subjects_router.get("")
 async def mobile_list_subjects(request: Request):
-    """
-    List subjects for the student.
-    Only shows APPROVED subjects whose name appears in the currently ACTIVE TOS version.
-    If no TOS version is active, falls back to showing all APPROVED subjects.
-    """
     auth = mobile_permission_required("mobile_view_subjects")(request)
     page, per_page = get_page_params(request, default_per_page=50, max_per_page=200)
     search = get_search(request)
@@ -527,16 +496,10 @@ async def mobile_list_subjects(request: Request):
         sql += " AND LOWER(s.name) LIKE LOWER(%s)"
         params.append(f"%{search}%")
 
-    # Always restrict to subjects aligned with the active TOS version.
-    # None  → no active TOS, show all approved subjects (safe fallback)
-    # []    → active TOS exists but has no subjects → show nothing
-    # [..] → show only subjects whose name is in the active TOS
     active_tos_subjects = _get_active_tos_subjects()
     if active_tos_subjects is None:
-        # No TOS active — show all approved subjects
         pass
     elif len(active_tos_subjects) == 0:
-        # Active TOS has no subjects — block everything
         sql += " AND 1=0"
     else:
         placeholders = ",".join(["%s"] * len(active_tos_subjects))
@@ -560,12 +523,8 @@ async def mobile_list_subjects(request: Request):
 
 @mobile_subjects_router.get("/{subject_id}")
 async def mobile_get_subject(request: Request, subject_id: str):
-    """Get a single APPROVED subject with its full module tree."""
     auth = mobile_permission_required("mobile_view_subjects")(request)
-    subject = fetchone(
-        "SELECT * FROM subjects WHERE id = %s AND status = 'APPROVED'",
-        [subject_id]
-    )
+    subject = fetchone("SELECT * FROM subjects WHERE id = %s AND status = 'APPROVED'", [subject_id])
     if not subject: return not_found("Subject not found")
     subject["id"] = str(subject["id"])
     if subject.get("created_by"): subject["created_by"] = str(subject["created_by"])
@@ -575,7 +534,6 @@ async def mobile_get_subject(request: Request, subject_id: str):
 
 @mobile_subjects_router.get("/{subject_id}/modules/{module_id}")
 async def mobile_get_module(request: Request, subject_id: str, module_id: str):
-    """Get a single APPROVED module (with its sub-topics)."""
     auth = mobile_permission_required("mobile_view_modules")(request)
     m = fetchone(
         """SELECT t.*, u.first_name || ' ' || u.last_name AS created_by_name
@@ -591,21 +549,13 @@ async def mobile_get_module(request: Request, subject_id: str, module_id: str):
 
 @mobile_subjects_router.post("/{subject_id}/modules/{module_id}/read")
 async def mobile_mark_module_read(request: Request, subject_id: str, module_id: str):
-    """Mark a module as read-to-completion by the authenticated student.
-    Idempotent — calling it multiple times is safe (upsert via ON CONFLICT DO NOTHING).
-    """
     auth = mobile_permission_required("mobile_view_modules")(request)
-    # Verify module belongs to this subject and is approved
-    m = fetchone(
-        "SELECT id FROM modules WHERE id = %s AND subject_id = %s AND status = 'APPROVED'",
-        [module_id, subject_id]
-    )
+    m = fetchone("SELECT id FROM modules WHERE id = %s AND subject_id = %s AND status = 'APPROVED'", [module_id, subject_id])
     if not m: return not_found("Module not found")
 
     execute(
         """INSERT INTO module_reads (user_id, module_id, subject_id)
-           VALUES (%s, %s, %s)
-           ON CONFLICT (user_id, module_id) DO NOTHING""",
+           VALUES (%s, %s, %s) ON CONFLICT (user_id, module_id) DO NOTHING""",
         [auth.user_id, module_id, subject_id]
     )
     return ok({"module_id": module_id, "read": True})
@@ -613,44 +563,29 @@ async def mobile_mark_module_read(request: Request, subject_id: str, module_id: 
 
 @mobile_subjects_router.get("/{subject_id}/modules/{module_id}/read")
 async def mobile_get_module_read_status(request: Request, subject_id: str, module_id: str):
-    """Return whether the student has read this module to completion."""
     auth = mobile_permission_required("mobile_view_modules")(request)
-    row = fetchone(
-        "SELECT id, read_at FROM module_reads WHERE user_id = %s AND module_id = %s",
-        [auth.user_id, module_id]
-    )
-    return ok({"module_id": module_id, "read": row is not None,
-               "read_at": row["read_at"].isoformat() if row else None})
+    row = fetchone("SELECT id, read_at FROM module_reads WHERE user_id = %s AND module_id = %s", [auth.user_id, module_id])
+    return ok({"module_id": module_id, "read": row is not None, "read_at": row["read_at"].isoformat() if row else None})
 
 # ═══════════════════════════════════════════════════════════════
 # MOBILE — AI Summarize endpoint
-# Proxies to Anthropic server-side so the API key stays secret.
 # ═══════════════════════════════════════════════════════════════
 
 @mobile_subjects_router.post("/ai/summarize")
 async def mobile_ai_summarize(request: Request):
-    """
-    POST /api/mobile/student/subjects/ai/summarize
-    Body: { "title": str, "content": str }
-    Returns: { "success": true, "data": { "summary": str } }
-    """
     auth = mobile_permission_required("mobile_view_modules")(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    try: body = await request.json()
+    except Exception: body = {}
 
     title   = (body.get("title")   or "").strip()
     content = (body.get("content") or "").strip()
 
-    if not content:
-        return error("No content provided to summarize.", 400)
+    if not content: return error("No content provided to summarize.", 400)
 
     import os, httpx
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return error("AI summarization is not configured on this server.", 503)
+    if not api_key: return error("AI summarization is not configured on this server.", 503)
 
     prompt = (
         f'Summarize this study module titled "{title}" '
@@ -676,9 +611,7 @@ async def mobile_ai_summarize(request: Request):
         data = resp.json()
         if resp.status_code != 200:
             return error(data.get("error", {}).get("message", "AI request failed."), 502)
-        summary = "".join(
-            b["text"] for b in (data.get("content") or []) if b.get("type") == "text"
-        )
+        summary = "".join(b["text"] for b in (data.get("content") or []) if b.get("type") == "text")
         return ok({"summary": summary or "No summary generated."})
     except Exception as exc:
         return error(f"AI request failed: {exc}", 502)

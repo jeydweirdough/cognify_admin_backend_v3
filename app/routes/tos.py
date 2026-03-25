@@ -43,7 +43,7 @@ import tempfile
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Path, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from psycopg2.extras import Json as PgJson
 
 from app.db import fetchone, fetchall, execute, execute_returning, paginate
@@ -52,6 +52,7 @@ from app.utils.responses import ok, created, no_content, error, not_found
 from app.utils.pagination import get_page_params, get_search
 from app.utils.validators import clean_str
 from app.utils.log import log_action
+from app.utils.storage import upload_pdf_bytes, delete_pdf_by_url
 
 admin_tos_router  = APIRouter(prefix="/api/web/admin/tos",    tags=["tos"])
 faculty_tos_router = APIRouter(prefix="/api/web/faculty/tos", tags=["tos-faculty"])
@@ -143,15 +144,11 @@ async def upload_tos_pdf(
     version_year  = clean_str(academic_year) or "2024-2025"
     version_notes = clean_str(notes) or None
 
-    # Persistent storage for the PDF
-    storage_dir = os.path.join("storage", "tos_pdfs")
-    os.makedirs(storage_dir, exist_ok=True)
-    pdf_path = os.path.join(storage_dir, f"{source_hash}.pdf")
-    
-    # Save the PDF if it doesn't exist
-    if not os.path.exists(pdf_path):
-        with open(pdf_path, "wb") as f:
-            f.write(pdf_bytes)
+    # Upload PDF to Supabase Storage bucket
+    try:
+        pdf_url = upload_pdf_bytes(pdf_bytes, filename=f"{source_hash}.pdf", folder="tos-pdfs")
+    except Exception as exc:
+        return error(f"Failed to upload PDF to storage: {exc}", 500)
 
     # Write PDF to a temp file for the extractor
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -194,18 +191,13 @@ async def upload_tos_pdf(
     row = execute_returning("""
         INSERT INTO tos_versions (
             label, academic_year, source_hash, extraction_method,
-            extracted_at, data, status, notes, created_by
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'DRAFT', %s, %s)
+            extracted_at, data, status, notes, created_by, pdf_url
+        ) VALUES (%s, %s, %s, %s, %s, %s, 'DRAFT', %s, %s, %s)
         RETURNING *
     """, [
         version_label, version_year, source_hash, extraction_method,
-        extracted_at, PgJson(data_payload), version_notes, auth.user_id
+        extracted_at, PgJson(data_payload), version_notes, auth.user_id, pdf_url
     ])
-
-    # Populate pdf_url now that we have the ID
-    pdf_url = f"/api/web/admin/tos/{row['id']}/pdf"
-    execute("UPDATE tos_versions SET pdf_url = %s WHERE id = %s", [pdf_url, row['id']])
-    row["pdf_url"] = pdf_url
 
     log_action(
         "Uploaded TOS PDF", version_label, row["id"],
@@ -285,23 +277,14 @@ async def get_tos_version(tos_id: str, request: Request):
 
 @admin_tos_router.get("/{tos_id}/pdf")
 async def get_tos_pdf(tos_id: str, request: Request):
-    """Serve the original PDF associated with a TOS version."""
+    """Redirect to the PDF stored in Supabase Storage."""
     auth = permission_required("view_tos")(request)
 
-    row = fetchone("SELECT source_hash FROM tos_versions WHERE id = %s", [tos_id])
-    if not row or not row.get("source_hash"):
-        return not_found("TOS version or PDF hash not found")
+    row = fetchone("SELECT pdf_url FROM tos_versions WHERE id = %s", [tos_id])
+    if not row or not row.get("pdf_url"):
+        return not_found("PDF not found for this TOS version.")
 
-    source_hash = row["source_hash"]
-    pdf_path = os.path.join("storage", "tos_pdfs", f"{source_hash}.pdf")
-
-    if not os.path.exists(pdf_path):
-        return not_found("PDF file not found on server. It may have been uploaded before PDF storage was enabled.")
-
-    return FileResponse(
-        pdf_path, 
-        media_type="application/pdf"
-    )
+    return RedirectResponse(url=row["pdf_url"], status_code=302)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

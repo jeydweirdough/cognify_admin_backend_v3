@@ -8,7 +8,7 @@ from app.db import fetchone, execute_returning
 from app.middleware.auth import mobile_permission_required
 from app.utils.responses import ok, error, not_found
 from app.utils.validators import clean_str
-from app.utils.storage import validate_and_normalise_avatar
+from app.utils.storage import validate_and_normalise_avatar, upload_avatar_bytes
 
 mobile_profile_router = APIRouter(
     prefix="/api/mobile/student/profile",
@@ -109,11 +109,22 @@ async def update_profile(request: Request):
         if field in body:
             value = body[field]
             
-            # Avatar: store the base64 data URI (or preset token) directly in the DB.
-            # No Supabase bucket is needed — the column holds the full image data.
+            # Avatar: if it's a base64 data URI from the phone camera/gallery,
+            # upload it to Supabase Storage and store only the public URL in DB.
+            # Preset tokens (e.g. "preset:a") are stored as-is — no bucket needed.
             if field == "photo_avatar" and isinstance(value, str) and value.startswith("data:image"):
                 try:
-                    value = validate_and_normalise_avatar(value)
+                    validate_and_normalise_avatar(value)  # size/format check
+                    # Decode base64 and upload
+                    import base64 as _b64, re as _re
+                    mime_match = _re.search(r"data:(image/[^;]+);base64,", value)
+                    mime_type  = mime_match.group(1) if mime_match else "image/png"
+                    raw_b64    = value.split(",", 1)[1]
+                    img_bytes  = _b64.b64decode(raw_b64)
+                    # Fetch first_name from DB for the filename
+                    user_row   = fetchone("SELECT first_name FROM users WHERE id = %s", [auth.user_id])
+                    first_name = (user_row or {}).get("first_name", "user")
+                    value = upload_avatar_bytes(img_bytes, str(auth.user_id), first_name, mime_type)
                 except Exception as e:
                     return error(f"Invalid profile photo: {str(e)}")
             
