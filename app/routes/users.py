@@ -274,6 +274,55 @@ async def faculty_get(request: Request, user_id: str):
     return ok(_fmt(u))
 
 
+@faculty_users_router.patch("/{user_id}/status")
+async def faculty_update_student_status(request: Request, user_id: str, background_tasks: BackgroundTasks):
+    """Allow faculty with approve_pending_students to approve/reject PENDING students only."""
+    auth = permission_required("approve_pending_students")(request)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    new_status = (body.get("status") or "").upper()
+    if new_status not in VALID_STATUSES:
+        return error(f"status must be one of: {', '.join(VALID_STATUSES)}")
+
+    # Ensure the target is a PENDING student — faculty cannot touch other roles
+    existing = fetchone(
+        """SELECT u.id, u.email, u.first_name, u.status, r.name AS role
+           FROM users u JOIN roles r ON u.role_id = r.id
+           WHERE u.id = %s""",
+        [user_id],
+    )
+    if not existing:
+        return not_found()
+    if existing["role"] != "STUDENT":
+        return forbidden("Faculty can only change the status of student accounts")
+    if existing["status"] != "PENDING":
+        return error("Only PENDING student accounts can be approved or rejected this way", 400)
+
+    execute("UPDATE users SET status = %s WHERE id = %s", [new_status, user_id])
+
+    if new_status == "ACTIVE":
+        execute(
+            "UPDATE users SET approved_by = %s, approved_at = NOW() WHERE id = %s",
+            [auth.user_id, user_id],
+        )
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Account Approved!</h2>
+            <p>Hello {existing['first_name']},</p>
+            <p>Great news! Your registration request has been <strong>APPROVED</strong>.</p>
+            <p>You can now log in using your email (<strong>{existing['email']}</strong>) and the password you created during sign-up.</p>
+        </div>
+        """
+        queue_email(background_tasks, existing["email"], "Your Account has been Approved", html_body)
+
+    log_action(f"Student status changed to {new_status}", existing["email"], user_id, user_id=auth.user_id, ip=auth.ip)
+    return ok({"id": user_id, "status": new_status})
+
+
 def _do_update(user_id: str, existing: dict, body: dict, auth: AuthState):
     email = (body.get("email") or existing["email"]).strip().lower()
     if email != existing["email"].lower():
