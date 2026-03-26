@@ -146,7 +146,7 @@ async def upload_tos_pdf(
 
     # Upload PDF to Supabase Storage bucket
     try:
-        pdf_url = upload_pdf_bytes(pdf_bytes, filename=f"{source_hash}.pdf")
+        pdf_url = upload_pdf_bytes(pdf_bytes, filename=f"{source_hash}.pdf", bucket_name="tos-pdfs")
     except Exception as exc:
         return error(f"Failed to upload PDF to storage: {exc}", 500)
 
