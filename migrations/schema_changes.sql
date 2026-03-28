@@ -167,6 +167,7 @@ CREATE TABLE assessments (
     subject_id  UUID         REFERENCES subjects(id)  ON DELETE SET NULL,
     module_id   UUID         REFERENCES modules(id)   ON DELETE SET NULL,
     items       INT          NOT NULL DEFAULT 0,
+    randomize_questions BOOLEAN NOT NULL DEFAULT FALSE,
     status      VARCHAR(30)  NOT NULL DEFAULT 'DRAFT'
                 CHECK (status IN ('DRAFT','PENDING','APPROVED','REJECTED','REVISION_REQUESTED')),
     author_id   UUID         REFERENCES users(id) ON DELETE SET NULL,
@@ -183,6 +184,7 @@ CREATE TABLE questions (
     competency_codes JSONB       NOT NULL DEFAULT '[]',
     options          JSONB       NOT NULL DEFAULT '[]',
     correct_answer   INT         NOT NULL DEFAULT 0,
+    sort_order       INT         NOT NULL DEFAULT 0,
     date_created     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_updated     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -414,6 +416,7 @@ SELECT
     a.type,
     a.status,
     a.items,
+    a.randomize_questions,
     a.subject_id,
     a.module_id,
     a.author_id AS assessment_author,
@@ -425,14 +428,15 @@ SELECT
                 'text',           q.text,
                 'options',        q.options,
                 'correct_answer', q.correct_answer,
+                'sort_order',     q.sort_order,
                 'author_id',      q.author_id
-            ) ORDER BY q.date_created
+            ) ORDER BY q.sort_order, q.date_created
         ) FILTER (WHERE q.id IS NOT NULL),
         '[]'::jsonb
     ) AS questions_list
 FROM assessments a
 LEFT JOIN questions q ON a.id = q.assessment_id
-GROUP BY a.id;
+GROUP BY a.id, a.randomize_questions;
 
 
 CREATE OR REPLACE VIEW view_change_comparisons AS
@@ -467,7 +471,8 @@ SELECT
             jsonb_build_object(
                 'title', a.title,
                 'type',  a.type,
-                'items', a.items
+                'items', a.items,
+                'randomize_questions', a.randomize_questions
             )
         ELSE NULL
     END AS live_data,

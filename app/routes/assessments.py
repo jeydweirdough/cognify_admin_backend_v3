@@ -48,8 +48,9 @@ _SELECT_WITH_Q = """
                        'text', q.text,
                        'options', q.options,
                        'correct_answer', q.correct_answer,
+                       'sort_order', q.sort_order,
                        'author_id', q.author_id
-                   ) ORDER BY q.date_created
+                   ) ORDER BY q.sort_order, q.date_created
                ) FILTER (WHERE q.id IS NOT NULL),
                '[]'::jsonb
            ) AS questions_list
@@ -66,6 +67,11 @@ def _fmt(a: dict, include_questions=False) -> dict:
     if a.get("subject_id"): a["subject_id"] = str(a["subject_id"])
     if a.get("module_id"):  a["module_id"]  = str(a["module_id"])
     if a.get("author_id"):  a["author_id"]  = str(a["author_id"])
+    
+    # CamelCase for frontend
+    if "randomize_questions" in a:
+        a["randomizeQuestions"] = a.pop("randomize_questions")
+
     if include_questions:
         raw_qs = a.pop("questions_list", None) or a.pop("questions", None) or []
         if isinstance(raw_qs, str):
@@ -79,6 +85,7 @@ def _fmt(a: dict, include_questions=False) -> dict:
                 "correctAnswer": q.get("correct_answer", q.get("correctAnswer", 0)),
                 "mode":          q.get("mode", "MCQ"),
                 "points":        q.get("points", 1),
+                "sortOrder":     q.get("sort_order", 0),
             })
         a["questions"] = normalized
     else:
@@ -134,11 +141,12 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
     for qid in existing_ids - incoming_ids:
         execute("DELETE FROM questions WHERE id = %s", [qid])
 
-    for q in questions:
+    for idx, q in enumerate(questions):
         qid     = str(q.get("id", ""))
         text    = (q.get("text") or "").strip()
         options = q.get("options", [])
         correct = q.get("correctAnswer", q.get("correct_answer", 0))
+        sort_order = q.get("sortOrder", q.get("sort_order", idx))
         try:
             correct = int(correct)
         except (TypeError, ValueError):
@@ -146,13 +154,13 @@ def _upsert_questions(assess_id: str, questions: list, author_id: str):
 
         if qid and not qid.startswith("q-") and qid in existing_ids:
             execute(
-                "UPDATE questions SET text = %s, options = %s, correct_answer = %s, last_updated = NOW() WHERE id = %s",
-                [text, PgJson(options), correct, qid],
+                "UPDATE questions SET text = %s, options = %s, correct_answer = %s, sort_order = %s, last_updated = NOW() WHERE id = %s",
+                [text, PgJson(options), correct, sort_order, qid],
             )
         else:
             execute_returning(
-                "INSERT INTO questions (assessment_id, author_id, text, options, correct_answer) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                [assess_id, author_id, text, PgJson(options), correct],
+                "INSERT INTO questions (assessment_id, author_id, text, options, correct_answer, sort_order) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                [assess_id, author_id, text, PgJson(options), correct, sort_order],
             )
 
 
@@ -486,7 +494,7 @@ def _create(body: dict, auth, auto_approve: bool):
     questions = body.get("questions", [])
 
     a = execute_returning(
-        "INSERT INTO assessments (title, type, subject_id, module_id, items, status, author_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
+        "INSERT INTO assessments (title, type, subject_id, module_id, items, status, author_id, randomize_questions) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
         [
             clean_str(body["title"]),
             atype,
@@ -495,6 +503,7 @@ def _create(body: dict, auth, auto_approve: bool):
             len(questions),
             status,
             auth.user_id,
+            body.get("randomizeQuestions", body.get("randomize_questions", False)),
         ],
     )
 
@@ -528,7 +537,7 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
     a = execute_returning(
         """UPDATE assessments
            SET title = %s, type = %s, subject_id = %s, module_id = %s,
-               items = %s, status = %s, updated_at = NOW()
+               items = %s, status = %s, randomize_questions = %s, updated_at = NOW()
            WHERE id = %s RETURNING *""",
         [
             clean_str(body.get("title", existing["title"])),
@@ -537,6 +546,7 @@ def _update(assess_id: str, body: dict, auth, can_approve: bool):
             body.get("module_id",  existing.get("module_id")),
             item_count,
             new_status,
+            body.get("randomizeQuestions", body.get("randomize_questions", existing.get("randomize_questions", False))),
             assess_id,
         ],
     )
